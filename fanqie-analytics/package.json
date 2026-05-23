@@ -1,0 +1,20 @@
+{
+  "name": "fanqie-analytics",
+  "version": "1.0.0",
+  "description": "番茄小说作家后台数据自动采集分析工具",
+  "main": "fanqie-analytics.js",
+  "scripts": {
+    "collect": "node fanqie-analytics.js collect",
+    "report": "node fanqie-analytics.js report",
+    "setup": "node fanqie-analytics.js setup",
+    "predict": "node fanqie-analytics.js predict",
+    "chapters": "node fanqie-analytics.js chapters",
+    "metrics": "node fanqie-analytics.js metrics",
+    "weekly": "node fanqie-analytics.js weekly",
+    "monthly": "node fanqie-analytics.js monthly",
+    "html": "node fanqie-analytics.js html"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}
