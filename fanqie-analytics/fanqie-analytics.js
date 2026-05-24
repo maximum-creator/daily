@@ -95,7 +95,7 @@ async function launchEdgeWithDebugPort() {
   const edgeExe = findEdgeExe();
   if (!edgeExe) throw new Error("找不到 Edge 浏览器，请确认 Edge 已安装");
 
-  console.log("   🔄 重启 Edge (开启调试模式，标签页会自动恢复)...");
+  console.log("   🔄 重启 Edge (CDP 调试模式)...");
 
   // 关闭正在运行的 Edge，这样可以用 debug port 重新启动
   const { execSync } = require("child_process");
@@ -103,12 +103,16 @@ async function launchEdgeWithDebugPort() {
   await new Promise(r => setTimeout(r, 1500));
 
   // 启动 Edge，使用默认用户数据目录（保持登录态）+ 开启调试端口
+  // 注意：不传 --restore-last-session，避免复活用户之前关掉的标签页
+  //       登录态存在 User Data 目录，跟标签恢复无关
   const { spawn } = require("child_process");
   const proc = spawn(edgeExe, [
     `--remote-debugging-port=${CDP_PORT}`,
-    "--restore-last-session",           // 恢复上次标签页
+    "about:blank",                      // 只开一个干净的空白页
     "--disable-background-mode",        // 采集完可正常退出
     "--disable-features=TranslateUI",   // 减少不必要请求
+    "--no-first-run",
+    "--no-default-browser-check",
   ], {
     detached: true,
     stdio: "ignore",
@@ -143,12 +147,29 @@ async function launchBrowser(config) {
 
   console.log("   ✅ 已连接 Edge (CDP) — 登录态完整\n");
 
-  // 3. 在默认 Context 中新建页面（携带所有 Cookies）
+  // 3. 在默认 Context 中创建/复用页面（携带所有 Cookies）
   const context = cdpBrowser.contexts()[0];
-  const page = await context.newPage();
+  const allPages = context.pages();
+  const blankPages = allPages.filter(p => {
+    const u = p.url();
+    return u === "about:blank" || u === "about:blank/" || u === "" || u === "edge://newtab/";
+  });
+  let page;
+
+  // 优先复用已有的空白页（Edge 启动时我们传了 about:blank）
+  // 这样不产生多余的标签页
+  if (blankPages.length > 0) {
+    page = blankPages[0];
+    // 关闭多余的空白页，只保留一个给脚本用
+    for (let i = 1; i < blankPages.length; i++) {
+      await blankPages[i].close().catch(() => {});
+    }
+  } else {
+    page = await context.newPage();
+  }
 
   // 4. 返回包装对象 — 对外暴露 BrowserContext-like API
-  //    .close() 只关闭我们的页面，不动用户的其他标签页
+  //    .close() 清理脚本产生的页面，不动用户的其他标签页
   return {
     _cdp: cdpBrowser,
     _context: context,
@@ -157,9 +178,18 @@ async function launchBrowser(config) {
     pages: () => [page],
     newPage: () => context.newPage(),
     close: async () => {
+      // 关闭脚本页面
       await page.close().catch(() => {});
-      // 只关闭我们的页面，不调用 cdpBrowser.close()
-      // — 那是用户正在使用的 Edge，不能关
+      // 清理残留的 about:blank / edge://newtab（Edge 启动时带的）
+      // 只清理空白页，不动用户打开的正常网页
+      const remaining = context.pages();
+      for (const p of remaining) {
+        const u = p.url();
+        if (u === "about:blank" || u === "" || u === "edge://newtab/") {
+          await p.close().catch(() => {});
+        }
+      }
+      // 不调用 cdpBrowser.close() — 那是用户正在使用的 Edge，不能关
     },
   };
 }
@@ -214,88 +244,162 @@ async function jsClick(page, text, retries = 2) {
 //   Drawer:  div.book-drawer-item → div.book-drawer-book-name (click to switch)
 //   Active:  .book-select-info-title (sidebar current book display)
 
-async function switchToBook(page, targetName) {
-  // 1. Check if already on the target book
-  const currentBook = await page.evaluate(() => {
+async function switchToBook(page, targetName, dataPageUrl) {
+  const checkBook = () => page.evaluate(() => {
     const el = document.querySelector(".book-select-info-title");
     return el?.textContent?.trim() || "";
   });
-  if (currentBook === targetName) return true;
+
+  if ((await checkBook()) === targetName) {
+    // Already on correct book, but re-verify after a moment (SPA might still be settling)
+    await page.waitForTimeout(500);
+    if ((await checkBook()) === targetName) return true;
+  }
 
   console.log(`   🔄 切换作品: ${targetName}`);
 
-  // 2. Check if drawer is already open — if so, use it directly
-  const drawerOpen = await page.evaluate(() => {
-    const drawer = document.querySelector(".byte-drawer-wrapper:not(.byte-drawer-wrapper-hide)");
-    return !!drawer;
-  });
+  // Helper: wait for drawer to fully open
+  const waitForDrawerOpen = async () => {
+    try {
+      await page.waitForSelector(".book-drawer-item", { timeout: 5000 });
+    } catch {}
+    await page.waitForTimeout(400);
+  };
 
-  if (!drawerOpen) {
-    const btnExists = await page.evaluate(() => !!document.querySelector("button.book-select-switch"));
-    if (!btnExists) {
-      console.log("   ⚠ 未找到切换作品按钮，可能不在数据页");
+  // Helper: wait for drawer to close (signal that book selection took effect)
+  const waitForDrawerClose = async (timeoutMs = 8000) => {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const isOpen = await page.evaluate(() => {
+        const wrapper = document.querySelector(".byte-drawer-wrapper");
+        if (!wrapper) return false;
+        return !wrapper.classList.contains("byte-drawer-wrapper-hide");
+      });
+      if (!isOpen) return true;
+      await page.waitForTimeout(300);
+    }
+    return false; // drawer didn't close in time
+  };
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // Retry: reload data page to reset broken SPA state
+    if (attempt > 0 && dataPageUrl) {
+      console.log("   🔄 重新加载数据页...");
+      await page.goto(dataPageUrl, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+      await page.waitForTimeout(2500);
+      if ((await checkBook()) === targetName) return true;
+    }
+
+    // Check if drawer is already open (e.g. from dashboard enumeration)
+    const drawerAlreadyOpen = await page.evaluate(() => {
+      const wrapper = document.querySelector(".byte-drawer-wrapper");
+      if (!wrapper) return false;
+      return !wrapper.classList.contains("byte-drawer-wrapper-hide");
+    });
+
+    if (!drawerAlreadyOpen) {
+      // Open drawer via dispatchEvent (avoids byte-drawer-mask pointer interception)
+      const btnFound = await page.evaluate(() => {
+        const btn = document.querySelector("button.book-select-switch");
+        if (!btn) return false;
+        btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        return true;
+      });
+      if (!btnFound && attempt === 0) continue;
+      if (!btnFound) {
+        console.log("   ⚠ 找不到切换按钮");
+        return false;
+      }
+    }
+
+    await waitForDrawerOpen();
+
+    // Find and click target book
+    const clicked = await page.evaluate((name) => {
+      const items = document.querySelectorAll(".book-drawer-item");
+      // Exact match first
+      for (const item of items) {
+        const nameEl = item.querySelector(".book-drawer-book-name");
+        const text = nameEl?.textContent?.trim() || "";
+        if (text === name) {
+          nameEl.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+          return "exact:" + text;
+        }
+      }
+      // Fuzzy match
+      for (const item of items) {
+        const nameEl = item.querySelector(".book-drawer-book-name");
+        const text = nameEl?.textContent?.trim() || "";
+        if (text.includes(name) || name.includes(text)) {
+          nameEl.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+          return "fuzzy:" + text;
+        }
+      }
+      return "not_found";
+    }, targetName);
+
+    if (clicked === "not_found") {
+      if (attempt === 0) continue; // retry with page reload
+      // Debug on final attempt
+      const debugInfo = await page.evaluate(() => {
+        const items = document.querySelectorAll(".book-drawer-item");
+        return {
+          count: items.length,
+          names: Array.from(items).map(item =>
+            item.querySelector(".book-drawer-book-name")?.textContent?.trim() || "(empty)"
+          ),
+        };
+      });
+      console.log(`   ⚠ 未找到 "${targetName}" (抽屉中有 ${debugInfo.count} 本书: ${debugInfo.names.join(", ") || "无"})`);
+      await page.evaluate(() => {
+        const mask = document.querySelector(".byte-drawer-mask");
+        if (mask) mask.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      }).catch(() => {});
+      await page.waitForTimeout(300);
       return false;
     }
-    await page.evaluate(() => {
-      const btn = document.querySelector("button.book-select-switch");
-      if (btn) btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await page.waitForTimeout(1500);
-  }
 
-  // 3. Find and click the target book in the drawer
-  const clicked = await page.evaluate((name) => {
-    const items = document.querySelectorAll(".book-drawer-item");
-    for (const item of items) {
-      const nameEl = item.querySelector(".book-drawer-book-name");
-      const text = nameEl?.textContent?.trim() || "";
-      if (text === name) {
-        nameEl.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        return "exact";
+    console.log(`   ✅ 选中: ${clicked}`);
+
+    // KEY: wait for drawer to CLOSE — this is the reliable signal that SPA accepted the click
+    // (URL doesn't change in this SPA, so waitForURL is useless)
+    const drawerClosed = await waitForDrawerClose(8000);
+    if (!drawerClosed) {
+      console.log("   ⚠ 抽屉未关闭，尝试继续...");
+    }
+
+    // Now wait for sidebar book name to update + content area to re-render
+    // SPA needs time to fetch and render new book's data
+    const startWait = Date.now();
+    let bookMatch = false;
+    while (Date.now() - startWait < 10000) {
+      const current = await checkBook();
+      if (current === targetName || current.includes(targetName) || targetName.includes(current)) {
+        bookMatch = true;
+        break;
+      }
+      await page.waitForTimeout(500);
+    }
+
+    if (bookMatch) {
+      // EXTRA: wait for content to actually re-render. The sidebar updates fast,
+      // but charts/tables lag behind. Without this, we collect old book's data.
+      await page.waitForTimeout(2000);
+      // Double-check sidebar is still correct
+      const final = await checkBook();
+      if (final === targetName || final.includes(targetName) || targetName.includes(final)) {
+        console.log(`   ✅ 已切换到: ${final}`);
+        return true;
       }
     }
-    // Fuzzy match: targetName is substring of book name, or vice versa
-    for (const item of items) {
-      const nameEl = item.querySelector(".book-drawer-book-name");
-      const text = nameEl?.textContent?.trim() || "";
-      if (text.includes(name) || name.includes(text)) {
-        nameEl.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        return "fuzzy:" + text;
-      }
-    }
-    return "not_found";
-  }, targetName);
 
-  if (clicked === "not_found") {
-    console.log(`   ⚠ 在书列表中未找到: ${targetName}`);
-    // Close drawer by clicking mask
-    await page.evaluate(() => {
-      const mask = document.querySelector(".byte-drawer-mask");
-      if (mask) mask.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    }).catch(() => {});
-    await page.waitForTimeout(500);
-    return false;
+    console.log(`   ⚠ 书名未更新到目标，重试...`);
   }
 
-  console.log(`   ✅ 选中: ${clicked}`);
-
-  // 4. Wait for page navigation after book selection
-  await page.waitForTimeout(3000);
-  await page.waitForLoadState("domcontentloaded").catch(() => {});
-  await page.waitForTimeout(2000);
-
-  // 5. Verify
-  const newBook = await page.evaluate(() => {
-    const el = document.querySelector(".book-select-info-title");
-    return el?.textContent?.trim() || "";
-  });
-  const ok = newBook === targetName || newBook.includes(targetName) || targetName.includes(newBook);
-  if (ok) {
-    console.log(`   ✅ 已切换到: ${newBook}`);
-  } else {
-    console.log(`   ⚠ 切换后书名不匹配: 期望="${targetName}" 实际="${newBook}"`);
-  }
-  return ok;
+  // Exhausted
+  const final = await checkBook();
+  console.log(`   ❌ 切换失败 (当前: "${final}")`);
+  return false;
 }
 
 // ── Data Collectors ────────────────────────────────────────────────
@@ -357,8 +461,14 @@ async function collectDashboard(page) {
   const switchBtn = await page.evaluate(() => !!document.querySelector("button.book-select-switch"));
   if (switchBtn) {
     try {
-      await page.click("button.book-select-switch");
-      await page.waitForTimeout(1500);
+      // Use dispatchEvent (same as switchToBook), not page.click()
+      await page.evaluate(() => {
+        const btn = document.querySelector("button.book-select-switch");
+        if (btn) btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      // Wait for drawer items to actually render
+      try { await page.waitForSelector(".book-drawer-book-name", { timeout: 5000 }); } catch {}
+      await page.waitForTimeout(500);
       const drawerBooks = await page.evaluate(() => {
         const items = document.querySelectorAll(".book-drawer-item");
         return Array.from(items).map(item => {
@@ -372,12 +482,28 @@ async function collectDashboard(page) {
       for (const b of drawerBooks) {
         allBooks.push({ name: b.name, status: b.name === currentBook ? novelNames[0]?.status || "" : "" });
       }
-      // Close drawer
+      // Close drawer — try mask click first, then Escape key
       await page.evaluate(() => {
         const mask = document.querySelector(".byte-drawer-mask");
         if (mask) mask.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       }).catch(() => {});
-      await page.waitForTimeout(500);
+      // Also press Escape to ensure drawer closes
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(800);
+      // Verify drawer actually closed
+      const stillOpen = await page.evaluate(() => {
+        const wrapper = document.querySelector(".byte-drawer-wrapper");
+        if (!wrapper) return false;
+        return !wrapper.classList.contains("byte-drawer-wrapper-hide");
+      });
+      if (stillOpen) {
+        // Force close: click mask again
+        await page.evaluate(() => {
+          const mask = document.querySelector(".byte-drawer-mask");
+          if (mask) mask.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        }).catch(() => {});
+        await page.waitForTimeout(500);
+      }
     } catch (e) {
       // If drawer enumeration fails, fall back to text-based list
     }
@@ -439,14 +565,10 @@ async function collectWorksData(page) {
 }
 
 async function collectQuality(page) {
-  // Zoom out aggressively to see full chapter completion curve (Ctrl+滚轮)
-  for (let i = 0; i < 6; i++) {
-    await page.keyboard.down("Control");
-    await page.keyboard.press("Minus");
-    await page.keyboard.up("Control");
-    await page.waitForTimeout(150);
-  }
-  await page.waitForTimeout(1000);
+  // Read available quality data. The default view shows ~5-10 recent chapters
+  // with a chapter range selector and ECharts chart. UI manipulation of the
+  // range selector is unreliable (ByteDance byte-select popup options don't
+  // match standard selectors). Future enhancement: intercept API calls.
 
   const txt = await page.evaluate(() => document.body?.innerText || "");
 
@@ -592,21 +714,53 @@ async function collectTraffic(page) {
   const txt = await page.evaluate(() => document.body?.innerText || "");
 
   const sources = {};
-  const sourcePatterns = ["书城", "分类", "书架", "继续阅读", "搜索", "其他"];
-  for (const src of sourcePatterns) {
-    // Escape regex-special chars (though Chinese chars are safe, be defensive)
-    const escaped = src.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // Match: "书城" followed by whitespace and a number (possibly with %)
+
+  // Try multiple pattern sets — the page may use different labels over time
+  const sourcePatterns = [
+    // Standard labels
+    ["书城", "书城"],
+    ["分类", "分类"],
+    ["书架", "书架"],
+    ["继续阅读", "继续阅读"],
+    ["搜索", "搜索"],
+    ["其他", "其他"],
+    // Alternative labels
+    ["推荐", "推荐"],
+    ["个人主页", "个人主页"],
+  ];
+
+  for (const [key, label] of sourcePatterns) {
+    if (sources[key] !== undefined) continue;
+    // Match: label followed by whitespace + number (with optional comma/decimals) + optional %
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(`${escaped}\\s+([\\d,.]+)%?`);
     const match = txt.match(regex);
     if (match) {
-      sources[src] = parseFloat(match[1].replace(/,/g, ""));
+      sources[key] = parseFloat(match[1].replace(/,/g, ""));
     }
   }
 
-  // If no sources parsed and page shows "暂无数据", return empty marker
-  if (Object.keys(sources).length === 0 && txt.includes("暂无数据")) {
-    sources._empty = true;
+  // Also try to extract traffic data from chart/tooltip text format
+  // e.g. "书城流量 1234 占比 56.7%"
+  const pctPattern = /(\S+?)\s*[:：]?\s*([\d,.]+)%/g;
+  let pctMatch;
+  while ((pctMatch = pctPattern.exec(txt)) !== null) {
+    const name = pctMatch[1].trim();
+    if (name.length <= 8 && !sources[name]) {
+      sources[name] = parseFloat(pctMatch[2].replace(/,/g, ""));
+    }
+  }
+
+  // If no sources parsed, mark empty — but log text sample for debugging
+  if (Object.keys(sources).length === 0) {
+    if (txt.includes("暂无数据") || txt.includes("无数据")) {
+      sources._empty = true;
+    } else {
+      // Has text but our parsers didn't match — log a snippet for debugging
+      const sample = txt.substring(0, 300).replace(/\n/g, " | ");
+      console.log(`   │  流量原始文本: ${sample}`);
+      sources._empty = true;
+    }
   }
 
   return { sources };
@@ -681,7 +835,6 @@ async function doCollect(opts = {}) {
   const config = loadConfig();
   if (opts.headless) config.headless = true;
   const date = today();
-  let baseDayDir = path.join(DATA_DIR, date);
 
   console.log(`📊 番茄数据分析 - 采集日期: ${date}`);
   console.log("========================================");
@@ -692,59 +845,41 @@ async function doCollect(opts = {}) {
   const browser = await launchBrowser(config);
   const page = browser.pages()[0] || await browser.newPage();
 
+  const baseDayDir = path.join(DATA_DIR, date);
+
   try {
-    // 1. 导航到作家后台 — 因为用的是用户自己的 Edge 会话，天然已登录
+    // 1. 导航到作家后台
     console.log("🔐 导航到作家后台...");
     await page.goto("https://fanqienovel.com/main/writer/home", {
       waitUntil: "networkidle", timeout: 20000,
     }).catch(() => {});
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(1500);
 
-    // 检查是否被重定向到登录页（极少发生，除非 Edge 登录态过期）
+    // 检查登录态
     if (page.url().includes("login") || page.url().includes("passport")) {
       console.error("❌ Edge 登录态已过期，请在 Edge 中重新登录番茄小说后重试");
       await browser.close();
       process.exit(1);
     }
-    console.log("✅ 已登录\n");
 
-    // 等待 SPA 仪表盘完全渲染
-    console.log("   ⏳ 等待页面渲染...");
-    await page.waitForLoadState("domcontentloaded").catch(() => {});
-    await page.waitForTimeout(3000);
-    // Wait for sidebar nav to appear (indicates SPA is ready)
+    // 等待 SPA 渲染
     try {
-      await page.waitForSelector('[class*="nav-item"], [class*="sidebar"], [class*="menu-item"]', { timeout: 10000 });
+      await page.waitForSelector('[class*="nav-item"], [class*="sidebar"], [class*="menu-item"]', { timeout: 15000 });
     } catch {}
     await page.waitForTimeout(1000);
-    // Double-check the page actually loaded dashboard content
     const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 500) || "");
     if (bodyText.includes("请登录") || bodyText.includes("验证码") || bodyText.length < 50) {
       console.error("❌ 登录态失效或页面加载异常");
       await browser.close();
       process.exit(1);
     }
+    console.log("✅ 已登录\n");
 
-    // Fullscreen for maximum data visibility
-    try {
-      await page.evaluate(() => {
-        if (document.fullscreenEnabled && !document.fullscreenElement) {
-          document.documentElement.requestFullscreen().catch(() => {});
-        }
-      });
-    } catch {}
-    // Zoom out for better view
-    for (let i = 0; i < 3; i++) {
-      await page.keyboard.down("Control");
-      await page.keyboard.press("Minus");
-      await page.keyboard.up("Control");
-    }
-    await page.waitForTimeout(500);
-
-    // 2. Navigate to Data Center first (needed for book-switch drawer to work)
+    // 导航到数据页 — 记住 URL，多书切换时用 page.goto 回去重置 SPA 状态
     console.log("📋 导航到数据中心...");
     await jsClick(page, "小说数据");
-    await page.waitForTimeout(4000);
+    await page.waitForTimeout(2500);
+    const dataPageUrl = page.url();
 
     // 3. Collect Dashboard — enumerate ALL books from drawer
     console.log("📋 采集: 作品列表...");
@@ -753,17 +888,20 @@ async function doCollect(opts = {}) {
     // Determine target books
     let targetBooks = dashboard.novels || [];
     if (opts.book) {
-      // Find matching book (fuzzy match)
-      const match = targetBooks.find(b => b.name.includes(opts.book) || opts.book.includes(b.name));
-      targetBooks = match ? [match] : targetBooks.slice(0, 1);
-      if (!match) console.warn(`   ⚠ 未找到 "${opts.book}"，使用当前作品`);
+      // Fuzzy match — can be comma-separated for multiple books
+      const names = opts.book.split(",").map(s => s.trim());
+      const matched = [];
+      for (const n of names) {
+        const m = targetBooks.find(b => b.name.includes(n) || n.includes(b.name));
+        if (m) matched.push(m);
+      }
+      targetBooks = matched.length > 0 ? matched : targetBooks.slice(0, 1);
+      if (matched.length < names.length) console.warn(`   ⚠ 部分书名未匹配: 找到 ${matched.length}/${names.length}`);
     } else if (!opts.allBooks) {
       targetBooks = targetBooks.slice(0, 1); // Default: current book only
     }
     console.log(`   小说数: ${dashboard.novels.length} | 采集目标: ${targetBooks.map(b => b.name).join(", ") || "无"}`);
 
-    // Book-specific base directory
-    const baseDayDir = path.join(DATA_DIR, date);
     if (!fs.existsSync(baseDayDir)) fs.mkdirSync(baseDayDir, { recursive: true });
 
     // Save dashboard (global book list)
@@ -773,20 +911,27 @@ async function doCollect(opts = {}) {
     for (let bi = 0; bi < targetBooks.length; bi++) {
       const book = targetBooks[bi];
       const bookSafeName = book.name.replace(/[<>:"/\\|?*]/g, "_").trim();
-      const bookDir = path.join(baseDayDir, bookSafeName);
-      if (!fs.existsSync(bookDir)) fs.mkdirSync(bookDir, { recursive: true });
 
-      // Switch to book (first book is already active from drawer enumeration)
-      if (bi > 0) {
-        console.log(`\n📖 [${bi + 1}/${targetBooks.length}] 切换作品...`);
-        const switched = await switchToBook(page, book.name);
-        if (!switched) {
-          console.log(`   ⚠ 跳过 "${book.name}"（切换失败）`);
+      // Check if already collected today (skip re-collection)
+      const summaryPath = path.join(baseDayDir, bookSafeName, "summary.json");
+      if (fs.existsSync(summaryPath)) {
+        const existing = JSON.parse(fs.readFileSync(summaryPath, "utf-8"));
+        if (existing.date === date && existing.collectedAt) {
+          console.log(`\n📖 [${bi + 1}/${targetBooks.length}] ${book.name} (今日已采集，跳过)`);
           continue;
         }
-      } else {
-        console.log(`\n📖 [1/${targetBooks.length}] 当前作品: ${book.name}`);
       }
+
+      // Verify and switch to target book (switchToBook is a no-op if already there)
+      console.log(`\n📖 [${bi + 1}/${targetBooks.length}] ${book.name}`);
+      const switched = await switchToBook(page, book.name, dataPageUrl);
+      if (!switched) {
+        console.log(`   ⚠ 跳过 "${book.name}"（切换失败）`);
+        continue;
+      }
+
+      const bookDir = path.join(baseDayDir, bookSafeName);
+      if (!fs.existsSync(bookDir)) fs.mkdirSync(bookDir, { recursive: true });
 
       // Collect sections independently - one failure won't stop others
       const results = { worksData: null, quality: null, traffic: null, revenue: null };
@@ -800,7 +945,7 @@ async function doCollect(opts = {}) {
       console.log("   ├─ 质量分析...");
       try {
         await jsClick(page, "质量分析");
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(2000);
         results.quality = await collectQuality(page);
       } catch (e) { console.error(`   │  ✗ 质量分析采集失败: ${e.message}`); }
 
@@ -808,7 +953,7 @@ async function doCollect(opts = {}) {
       console.log("   ├─ 流量构成...");
       try {
         await jsClick(page, "流量构成");
-        await page.waitForTimeout(3000);
+        await page.waitForTimeout(2000);
         results.traffic = await collectTraffic(page);
       } catch (e) { console.error(`   │  ✗ 流量构成采集失败: ${e.message}`); }
 
@@ -817,12 +962,12 @@ async function doCollect(opts = {}) {
       let revenue30 = null;
       try {
         await jsClick(page, "收益分析");
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(800);
         await jsClick(page, "小说收益");
-        await page.waitForTimeout(4000);
+        await page.waitForTimeout(2500);
         results.revenue = await collectRevenue(page);
         if (await jsClick(page, "30天")) {
-          await page.waitForTimeout(3000);
+          await page.waitForTimeout(2000);
           revenue30 = await collectRevenue(page);
         }
       } catch (e) { console.error(`   │  ✗ 收益数据采集失败: ${e.message}`); }
@@ -882,18 +1027,22 @@ async function doCollect(opts = {}) {
       console.log(`   ✅ ${book.name} 采集完成`);
     }
 
-    // 7. Benefits (shared across books — author-level data)
-    console.log("\n🎁 采集: 福利管理...");
-    let benefits = {};
-    try {
-      await jsClick(page, "福利管理");
-      await page.waitForTimeout(1000);
-      await jsClick(page, "作家等级");
-      await page.waitForTimeout(3000);
-      benefits = await collectBenefits(page);
-      if (benefits.authorLevel) console.log(`   作家等级: Lv.${benefits.authorLevel}`);
-      fs.writeFileSync(path.join(baseDayDir, "benefits.json"), JSON.stringify(benefits, null, 2));
-    } catch (e) { console.error(`   ✗ 福利数据采集失败: ${e.message}`); }
+    // 7. Benefits (author-level, doesn't change daily — skip if already collected)
+    const benefitsPath = path.join(baseDayDir, "benefits.json");
+    if (fs.existsSync(benefitsPath)) {
+      console.log("\n🎁 福利管理: 今日已采集，跳过");
+    } else {
+      console.log("\n🎁 采集: 福利管理...");
+      try {
+        await jsClick(page, "福利管理");
+        await page.waitForTimeout(1000);
+        await jsClick(page, "作家等级");
+        await page.waitForTimeout(2000);
+        const benefits = await collectBenefits(page);
+        if (benefits.authorLevel) console.log(`   作家等级: Lv.${benefits.authorLevel}`);
+        fs.writeFileSync(benefitsPath, JSON.stringify(benefits, null, 2));
+      } catch (e) { console.error(`   ✗ 福利数据采集失败: ${e.message}`); }
+    }
 
     console.log("\n========================================");
     console.log(`✅ 采集完成！共处理 ${targetBooks.length} 本书`);
@@ -944,6 +1093,54 @@ function generateCSV(summary, dayDir) {
   }
 }
 
+// ── Multi-book support ───────────────────────────────────────────────
+// daily-log.json 每条记录现在有 book 字段。
+// 报告函数需要先按书名过滤，再分析，避免多书数据混在一起。
+// 向后兼容旧数据（books 数组格式，无 book 字段）。
+
+function filterLogByBook(log, targetBook) {
+  return log.filter(d => {
+    if (d.book) return d.book === targetBook;
+    // Old format: use d.books[0].name
+    return d.books?.[0]?.name === targetBook;
+  });
+}
+
+function getBookName(log) {
+  // Try new format first (d.book field)
+  const newNames = [...new Set(log.map(d => d.book).filter(Boolean))];
+  if (newNames.length > 0) return newNames;
+  // Fallback to old format (d.books[0].name)
+  return [...new Set(log.map(d => d.books?.[0]?.name).filter(Boolean))];
+}
+
+function resolveBook(log, requested) {
+  const bookList = getBookName(log);
+  if (!bookList) return { entries: [], book: null };
+  if (requested) {
+    // Fuzzy match
+    const match = bookList.find(b => b.includes(requested) || requested.includes(b));
+    if (match) return { entries: filterLogByBook(log, match), book: match };
+    console.warn(`   ⚠ 未找到 "${requested}"，使用最近作品`);
+  }
+  // Default: most recent entry's book
+  const latestBook = log[log.length - 1]?.book || bookList[0];
+  return { entries: filterLogByBook(log, latestBook), book: latestBook };
+}
+
+// Find quality.json — tries multi-book path first, then flat path
+function findQualityPath(entry) {
+  if (!entry) return null;
+  const bookSafe = (entry.book || "").replace(/[<>:"/\\|?*]/g, "_").trim();
+  // Multi-book path: data/<date>/<book_name>/quality.json
+  const multiPath = path.join(DATA_DIR, entry.date, bookSafe, "quality.json");
+  if (fs.existsSync(multiPath)) return multiPath;
+  // Legacy flat path: data/<date>/quality.json
+  const flatPath = path.join(DATA_DIR, entry.date, "quality.json");
+  if (fs.existsSync(flatPath)) return flatPath;
+  return null;
+}
+
 // ── Report Generator ────────────────────────────────────────────────
 
 function doReport() {
@@ -953,14 +1150,20 @@ function doReport() {
     process.exit(1);
   }
 
-  const log = JSON.parse(fs.readFileSync(logPath, "utf-8"));
-  if (log.length === 0) {
+  const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  if (raw.length === 0) {
     console.log("❌ 数据为空");
     process.exit(1);
   }
 
+  const { entries: log, book } = resolveBook(raw, opts.book);
+  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
+  const bookList = getBookName(raw);
+
   console.log("📊 番茄小说数据趋势报告");
   console.log("========================================\n");
+  if (book) console.log(`📖 作品: ${book}`);
+  if (bookList.length > 1) console.log(`📚 已采集 ${bookList.length} 本书 (用 --book 切换)`);
   console.log(`数据范围: ${log[0].date} ~ ${log[log.length - 1].date} (${log.length} 天)\n`);
 
   // Trend analysis
@@ -1113,7 +1316,9 @@ function doPredict() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
   if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据"); process.exit(1); }
 
-  const log = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const { entries: log, book } = resolveBook(raw, opts.book);
+  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
   const latest = log[log.length - 1];
 
   // Use detailed daily revenue table if available (from 30-day tab)
@@ -1136,6 +1341,7 @@ function doPredict() {
 
   console.log("🔮 番茄小说收益预测");
   console.log("========================================\n");
+  if (book) console.log(`📖 作品: ${book}`);
   console.log(`历史数据: ${log.length} 天`);
   console.log(`当前日收益: ¥${revenue[revenue.length - 1].toFixed(2)}`);
   console.log(`当前阅读人数: ${readers[readers.length - 1]}人\n`);
@@ -1210,20 +1416,22 @@ function doChapters() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
   if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据，请先运行 collect"); process.exit(1); }
 
-  const log = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const { entries: log, book } = resolveBook(raw, opts.book);
+  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
   const latest = log[log.length - 1];
 
-  // Load chapter list from the latest day's quality.json
-  const latestDayDir = path.join(DATA_DIR, latest.date);
-  const qualityPath = path.join(latestDayDir, "quality.json");
+  // Load chapter list from the latest day's quality.json (multi-book + legacy fallback)
+  const qualityPath = findQualityPath(latest);
   let chapterList = [];
-  if (fs.existsSync(qualityPath)) {
+  if (qualityPath) {
     const quality = JSON.parse(fs.readFileSync(qualityPath, "utf-8"));
     chapterList = quality.chapterList || [];
   }
 
   console.log("📖 章节数据分析");
   console.log("========================================\n");
+  if (book) console.log(`📖 作品: ${book}`);
 
   if (chapterList.length === 0) {
     console.log("⚠️ 暂无章节数据，请先运行 collect 采集质量分析数据\n");
@@ -1257,7 +1465,7 @@ function doChapters() {
 
   // Load completion rates if available
   let chapters = [];
-  if (fs.existsSync(qualityPath)) {
+  if (qualityPath) {
     const quality = JSON.parse(fs.readFileSync(qualityPath, "utf-8"));
     chapters = quality.chapterList || [];
   }
@@ -1348,18 +1556,20 @@ function doMetrics() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
   if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据"); process.exit(1); }
 
-  const log = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const { entries: log, book } = resolveBook(raw, opts.book);
+  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
   const latest = log[log.length - 1];
 
   console.log("📐 作者核心指标分析");
   console.log("========================================\n");
+  if (book) console.log(`📖 作品: ${book}`);
 
-  // Load latest quality data for word counts
-  const latestDayDir = path.join(DATA_DIR, latest.date);
-  const qualityPath = path.join(latestDayDir, "quality.json");
+  // Load latest quality data for word counts (multi-book + legacy fallback)
+  const qualityPath = findQualityPath(latest);
   let chapterList = [];
   let totalWords = 0;
-  if (fs.existsSync(qualityPath)) {
+  if (qualityPath) {
     try {
       const quality = JSON.parse(fs.readFileSync(qualityPath, "utf-8"));
       chapterList = quality.chapterList || [];
@@ -1537,7 +1747,7 @@ function generateReport(log, period, label) {
   console.log(`📊 ${label}`);
   console.log("=".repeat(60));
   console.log(`数据周期: ${log[0].date} ~ ${log[log.length - 1].date} (${log.length} 天)`);
-  console.log(`当前作品: ${(latest.book || (latest.books || [{}])[0]?.name || "未知")}\n`);
+  console.log(`当前作品: ${(latest.book || latest.books?.[0]?.name || "未知")}\n`);
 
   // Summary
   console.log("── 📋 核心数据 ──");
@@ -1614,12 +1824,11 @@ function generateReport(log, period, label) {
 
     // Word count recommendation
     console.log("\n── ✍️ 更新建议 ──");
-    const latestDayDir = path.join(DATA_DIR, latest.date);
-    const qualityPath = path.join(latestDayDir, "quality.json");
+    const _qualityPath = findQualityPath(latest);
     let avgWords = 4000;
-    if (fs.existsSync(qualityPath)) {
+    if (_qualityPath) {
       try {
-        const quality = JSON.parse(fs.readFileSync(qualityPath, "utf-8"));
+        const quality = JSON.parse(fs.readFileSync(_qualityPath, "utf-8"));
         const cls = quality.chapterList || [];
         if (cls.length > 0) {
           avgWords = Math.round(cls.reduce((s, c) => s + (c.wordCount || 0), 0) / cls.length);
@@ -1642,7 +1851,9 @@ function generateReport(log, period, label) {
 function doWeekly() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
   if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据"); process.exit(1); }
-  const log = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const { entries: log } = resolveBook(raw, opts.book);
+  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
   const weekData = log.slice(-7);
   generateReport(weekData, "weekly", "📅 周报 (近7天)");
 }
@@ -1650,7 +1861,9 @@ function doWeekly() {
 function doMonthly() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
   if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据"); process.exit(1); }
-  const log = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const { entries: log } = resolveBook(raw, opts.book);
+  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
   const monthData = log.slice(-30);
   generateReport(monthData, "monthly", "📅 月报 (近30天)");
 }
@@ -1666,7 +1879,9 @@ function htmlEscape(s) {
 function doHtml() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
   if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据"); process.exit(1); }
-  const log = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const { entries: log, book } = resolveBook(raw, opts.book);
+  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
   const latest = log[log.length - 1];
 
   const revenue = log.map(d => getNested(d, "revenue.overview.yesterdayRevenue") || 0);
@@ -1702,11 +1917,10 @@ function doHtml() {
   // Per-1000 words + raw quality data
   let perKWords = 0, totalWords = 0, avgChapWords = 0;
   let rawQuality = null; // full quality.json data (chapters, chapterList, etc.)
-  const latestDayDir = path.join(DATA_DIR, latest.date);
-  const qualityPath = path.join(latestDayDir, "quality.json");
-  if (fs.existsSync(qualityPath)) {
+  const _htmlQualityPath = findQualityPath(latest);
+  if (_htmlQualityPath) {
     try {
-      rawQuality = JSON.parse(fs.readFileSync(qualityPath, "utf-8"));
+      rawQuality = JSON.parse(fs.readFileSync(_htmlQualityPath, "utf-8"));
       const cls = rawQuality.chapterList || [];
       totalWords = cls.reduce((s, c) => s + (c.wordCount || 0), 0);
       avgChapWords = cls.length > 0 ? Math.round(totalWords / cls.length) : 0;
@@ -1747,7 +1961,7 @@ function doHtml() {
   if (log.length >= 3) pred7 = predictFuture(revenue, 7);
   const next7Total = pred7.reduce((s, p) => s + p.expected, 0);
 
-  const bookName = (latest.books || [{}])[0]?.name || "我的作品";
+  const bookName = latest.book || "我的作品";
   const reportDate = new Date().toISOString().slice(0, 10);
 
   // ── Stage-aware analysis ──────────────────────────────────────────
@@ -2234,7 +2448,9 @@ const opts = {
       console.log("  html       导出 HTML 可视化报告（可截图展示）");
       console.log("");
       console.log("选项:");
-      console.log("  --headless 浏览器后台运行（不显示窗口）");
+      console.log("  --headless   浏览器后台运行（不显示窗口）");
+      console.log("  --book <名>  指定作品（采集/报告均可使用，支持模糊匹配）");
+      console.log("  --all        采集全部作品（仅 collect）");
       process.exit(1);
   }
 })();
