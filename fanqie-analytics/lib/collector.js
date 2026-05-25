@@ -16,7 +16,7 @@ function today() {
 
 async function jsClick(page, text, retries = 2) {
   for (let attempt = 0; attempt <= retries; attempt++) {
-    if (attempt > 0) await page.waitForTimeout(1500);
+    if (attempt > 0) await page.waitForTimeout(600);
     const result = await page.evaluate((t) => {
       const allNodes = [];
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
@@ -60,9 +60,9 @@ async function isDrawerOpen(page) {
 
 async function waitForDrawerOpen(page) {
   try {
-    await page.waitForSelector(".book-drawer-item", { timeout: 5000 });
+    await page.waitForSelector(".book-drawer-item", { timeout: 3000 });
   } catch { /* may already be open */ }
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(300);
 }
 
 async function closeDrawer(page) {
@@ -88,14 +88,14 @@ async function switchToBook(page, targetName, dataPageUrl) {
   });
 
   if ((await checkBook()) === targetName) {
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(300);
     if ((await checkBook()) === targetName) return true;
   }
 
   for (let attempt = 0; attempt < 2; attempt++) {
     if (attempt > 0 && dataPageUrl) {
       await page.goto(dataPageUrl, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
-      await page.waitForTimeout(2500);
+      await page.waitForTimeout(800);
       if ((await checkBook()) === targetName) return true;
     }
 
@@ -132,20 +132,20 @@ async function switchToBook(page, targetName, dataPageUrl) {
 
     // Wait for drawer to close
     const closeStart = Date.now();
-    while (Date.now() - closeStart < 8000) {
+    while (Date.now() - closeStart < 3000) {
       if (!(await isDrawerOpen(page))) break;
-      await page.waitForTimeout(300);
+      await page.waitForTimeout(200);
     }
 
     // Wait for sidebar to update
     const startWait = Date.now();
-    while (Date.now() - startWait < 10000) {
+    while (Date.now() - startWait < 5000) {
       const current = await checkBook();
       if (current === targetName || current.includes(targetName) || targetName.includes(current)) {
-        await page.waitForTimeout(2000); // let charts render
+        await page.waitForTimeout(400); // let charts render
         return true;
       }
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(300);
     }
   }
   return false;
@@ -167,7 +167,7 @@ async function switchBookOnProfitPage(page, targetName) {
       const btns = document.querySelectorAll(".byte-modal-footer button");
       for (const btn of btns) if (btn.textContent?.trim().includes("取消")) btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(500);
   }
 
   if ((await checkBook()) === targetName) return true;
@@ -177,7 +177,7 @@ async function switchBookOnProfitPage(page, targetName) {
     const btn = document.querySelector("button.book-select-switch");
     if (btn) btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(500);
 
   const clicked = await page.evaluate((name) => {
     const items = document.querySelectorAll(".book-item");
@@ -202,13 +202,13 @@ async function switchBookOnProfitPage(page, targetName) {
     return false;
   }
 
-  await page.waitForTimeout(500);
+  await page.waitForTimeout(300);
   await page.evaluate(() => {
     const btns = document.querySelectorAll(".byte-modal-footer button");
     for (const btn of btns) if (btn.textContent?.trim().includes("确定")) { btn.dispatchEvent(new MouseEvent("click", { bubbles: true })); return; }
   });
 
-  await page.waitForTimeout(5000);
+  await page.waitForTimeout(1000);
   const final = await checkBook();
   return final === targetName || final.includes(targetName) || targetName.includes(final);
 }
@@ -331,6 +331,7 @@ async function collectQuality(page, apiCalls = []) {
   let milestoneChapters = {};
   let cumulativeWords = 0;
   let dailyWords = {};
+  let totalCount = 0;
 
   // Phase 1: Parse captured API responses (exact field names from fanqie API)
   if (apiCalls.length > 0) {
@@ -362,9 +363,9 @@ async function collectQuality(page, apiCalls = []) {
             urges: ch.reminder_cnt || existing.urges || 0,
             wordCount: ch.word_number || existing.wordCount || 0,
             publishTime: pubDate || existing.publishTime || "",
-            completionRate: (!isNaN(cRate) && cRate > 0) ? cRate : (existing.completionRate || null),
-            followReadRate: (!isNaN(fRate) && fRate > 0) ? fRate : (existing.followReadRate || null),
-            lossRate: (!isNaN(lRate) && lRate > 0) ? lRate : (existing.lossRate || null),
+            completionRate: !isNaN(cRate) ? cRate : (existing.completionRate ?? null),
+            followReadRate: !isNaN(fRate) ? fRate : (existing.followReadRate ?? null),
+            lossRate: !isNaN(lRate) ? lRate : (existing.lossRate ?? null),
           });
         }
       } catch (e) { /* skip malformed */ }
@@ -378,7 +379,7 @@ async function collectQuality(page, apiCalls = []) {
           urges: ch.urges, wordCount: ch.wordCount, publishTime: ch.publishTime,
           completionRate: ch.completionRate, followReadRate: ch.followReadRate, lossRate: ch.lossRate,
         });
-        if (ch.completionRate != null) {
+        if (!isNaN(ch.completionRate)) {
           chapters.push({
             chapter: ch.chapter, title: ch.title,
             completionRate: ch.completionRate,
@@ -390,12 +391,19 @@ async function collectQuality(page, apiCalls = []) {
     }
 
     // Extended pagination: if total_count > fetched, re-fetch ALL chapters
+    totalCount = 0;
     if (chapterList.length > 0) {
       for (const call of apiCalls) {
         try {
           const url = new URL(call.url);
-          let totalCount = 0;
-          try { totalCount = JSON.parse(call.body).data?.total_count || 0; } catch (e) { /* skip */ }
+          try {
+            const json = JSON.parse(call.body);
+            totalCount = json.data?.total_count
+              || json.data?.total
+              || json.result?.total_count
+              || json.total_count
+              || 0;
+          } catch (e) { /* skip */ }
           if (totalCount > chapterList.length) {
             const expandedUrl = new URL(call.url);
             expandedUrl.searchParams.set("size", String(totalCount));
@@ -428,11 +436,11 @@ async function collectQuality(page, apiCalls = []) {
                   urges: ch.reminder_cnt || ch.urges || 0,
                   wordCount: ch.word_number || ch.word_count || ch.words || 0,
                   publishTime: pubDate,
-                  completionRate: (!isNaN(cRate) && cRate > 0) ? cRate : null,
-                  followReadRate: (!isNaN(fRate) && fRate > 0) ? fRate : null,
-                  lossRate: (!isNaN(lRate) && lRate > 0) ? lRate : null,
+                  completionRate: !isNaN(cRate) ? cRate : null,
+                  followReadRate: !isNaN(fRate) ? fRate : null,
+                  lossRate: !isNaN(lRate) ? lRate : null,
                 });
-                if (!isNaN(cRate) && cRate > 0) {
+                if (!isNaN(cRate)) {
                   chapters.push({
                     chapter: (ch.indice || ch.chapter || 0) + 1,
                     title: ch.title || "",
@@ -560,7 +568,7 @@ async function collectQuality(page, apiCalls = []) {
     }
   }
 
-  return { chapters, chapterList, milestones, milestoneChapters, cumulativeWords, dailyWords };
+  return { chapters, chapterList, milestones, milestoneChapters, cumulativeWords, dailyWords, totalCount };
 }
 
 async function collectRevenue(page) {
@@ -647,12 +655,37 @@ function collectTrafficFromApi(apiCalls, legendNames = null) {
 // Main Collection Orchestrator
 // ═══════════════════════════════════════════════════════════════════
 
-async function collectForBook(page, bookName, bookStatus = "") {
+async function collectForBook(page, bookName, bookStatus = "", fastMode = false) {
   const date = today();
   const results = { worksData: null, quality: null, traffic: null, revenue: null };
 
   // 1. Works data
   try { results.worksData = await collectWorksData(page); } catch (e) { /* continue */ }
+
+  // Fast mode: skip quality + traffic detail, only collect revenue
+  if (fastMode) {
+    results.quality = { chapters: [], chapterList: [], milestones: {}, chaptersWithCompletionRate: 0, totalChapters: 0 };
+    results.traffic = null;
+    // Still collect revenue (fast — just parses text)
+    try {
+      await jsClick(page, "小说收益");
+      await page.waitForTimeout(800);
+      await switchBookOnProfitPage(page, bookName);
+      await jsClick(page, "每日收益");
+      await page.waitForTimeout(800);
+      results.revenue = await collectRevenue(page);
+    } catch (e) { /* skip */ }
+    // Build minimal summary
+    return {
+      date,
+      book: bookName, status: bookStatus,
+      collectedAt: new Date().toISOString(),
+      worksData: results.worksData,
+      quality: results.quality,
+      traffic: null,
+      revenue: results.revenue,
+    };
+  }
 
   // 2. Quality — intercept API responses
   try {
@@ -672,7 +705,13 @@ async function collectForBook(page, bookName, bookStatus = "") {
     page.on("response", onResponse);
     try {
       await jsClick(page, "质量分析");
-      await page.waitForTimeout(3000);
+      // Wait for quality page DOM to render (API calls are dispatched by now)
+      await page.waitForFunction(
+        () => document.body.innerText.includes("章节名") || document.body.innerText.includes("读完率"),
+        { timeout: 8000 }
+      ).catch(() => {});
+      // Buffer for API responses to fully arrive
+      await page.waitForTimeout(800);
     } finally {
       page.removeListener("response", onResponse);
     }
@@ -684,7 +723,7 @@ async function collectForBook(page, bookName, bookStatus = "") {
 
       if (bookId) {
         const firstUrl = new URL(qualityApiCalls[0].url);
-        for (const st of ["3", "4"]) {
+        const extraFetches = ["3", "4"].map(async (st) => {
           try {
             const u = new URL(firstUrl.origin + firstUrl.pathname);
             for (const [k, v] of firstUrl.searchParams) u.searchParams.set(k, k === "stats_type" ? st : v);
@@ -695,8 +734,12 @@ async function collectForBook(page, bookName, bookStatus = "") {
               const res = await fetch(apiUrl, { credentials: "include" });
               return await res.text();
             }, u.toString());
-            qualityApiCalls.push({ url: u.toString(), body, status: 200 });
-          } catch (e) { /* skip */ }
+            return { url: u.toString(), body, status: 200 };
+          } catch (e) { return null; }
+        });
+        const extraResults = await Promise.all(extraFetches);
+        for (const r of extraResults) {
+          if (r) qualityApiCalls.push(r);
         }
       }
     }
@@ -722,7 +765,11 @@ async function collectForBook(page, bookName, bookStatus = "") {
     page.on("response", onTrafficResponse);
     try {
       await jsClick(page, "流量构成");
-      await page.waitForTimeout(3000);
+      await page.waitForFunction(
+        () => document.body.innerText.includes("流量来源") || document.body.innerText.includes("来源"),
+        { timeout: 8000 }
+      ).catch(() => {});
+      await page.waitForTimeout(800);
     } finally {
       page.removeListener("response", onTrafficResponse);
     }
@@ -742,14 +789,14 @@ async function collectForBook(page, bookName, bookStatus = "") {
   let revenue30 = null;
   try {
     await jsClick(page, "小说收益");
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(400);
     const profitSwitched = await switchBookOnProfitPage(page, bookName);
     if (profitSwitched) {
       await jsClick(page, "每日收益");
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(300);
       results.revenue = await collectRevenue(page);
       if (await jsClick(page, "30天")) {
-        await page.waitForTimeout(2000);
+        await page.waitForTimeout(600);
         revenue30 = await collectRevenue(page);
       }
     }
@@ -769,7 +816,7 @@ async function collectForBook(page, bookName, bookStatus = "") {
       chapters: results.quality?.chapters || [],
       chapterList: results.quality?.chapterList || [],
       chaptersWithCompletionRate: results.quality?.chapters?.length || 0,
-      totalChapters: results.quality?.chapterList?.length || 0,
+      totalChapters: results.quality?.totalCount || results.quality?.chapterList?.length || 0,
       avgWordCount: results.quality?.chapterList?.length > 0
         ? Math.round(results.quality.chapterList.reduce((s, c) => s + c.wordCount, 0) / results.quality.chapterList.length)
         : 0,
@@ -795,15 +842,23 @@ function saveCollection(dataDir, tenantId, summary) {
 
   if (!fs.existsSync(bookDir)) fs.mkdirSync(bookDir, { recursive: true });
 
-  // Save individual JSONs
+  // Save individual JSONs — protect existing data from being overwritten with empty results
+  const wp = path.join(bookDir, "works-data.json");
   if (summary.worksData && Object.keys(summary.worksData).length > 0) {
-    fs.writeFileSync(path.join(bookDir, "works-data.json"), JSON.stringify(summary.worksData, null, 2));
+    fs.writeFileSync(wp, JSON.stringify(summary.worksData, null, 2));
   }
+  const qp = path.join(bookDir, "quality.json");
   if (summary.quality) {
-    fs.writeFileSync(path.join(bookDir, "quality.json"), JSON.stringify(summary.quality, null, 2));
+    const hasChapters = summary.quality.chapterList && summary.quality.chapterList.length > 0;
+    if (hasChapters || !fs.existsSync(qp)) {
+      fs.writeFileSync(qp, JSON.stringify(summary.quality, null, 2));
+    }
   }
+  const tp = path.join(bookDir, "traffic.json");
   if (summary.traffic && !summary.traffic.isEmpty) {
-    fs.writeFileSync(path.join(bookDir, "traffic.json"), JSON.stringify(summary.traffic, null, 2));
+    fs.writeFileSync(tp, JSON.stringify(summary.traffic, null, 2));
+  } else if (summary.traffic && summary.traffic.isEmpty && !fs.existsSync(tp)) {
+    fs.writeFileSync(tp, JSON.stringify(summary.traffic, null, 2));
   }
   if (summary.revenue) {
     fs.writeFileSync(path.join(bookDir, "revenue.json"), JSON.stringify(summary.revenue, null, 2));

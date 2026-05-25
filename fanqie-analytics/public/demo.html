@@ -34,19 +34,41 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
 /* ═══════════════ LOADING OVERLAY ═══════════════ */
 .load-overlay{display:none;position:fixed;inset:0;background:rgba(26,26,46,0.97);z-index:100;flex-direction:column;align-items:center;justify-content:center}
 .load-overlay.active{display:flex}
-.load-title{color:#fff;font-size:18px;margin-bottom:28px;letter-spacing:1px}
-.load-steps{width:480px;max-width:90vw}
-.load-step{display:flex;align-items:center;gap:14px;padding:14px 18px;margin:6px 0;border-radius:8px;color:rgba(255,255,255,0.3);font-size:14px;transition:all .4s}
-.load-step .ls-icon{font-size:18px;width:30px;text-align:center;flex-shrink:0}
+.load-title{color:#fff;font-size:18px;margin-bottom:8px;letter-spacing:1px}
+.load-elapsed{color:rgba(255,255,255,0.5);font-size:28px;font-weight:300;font-family:"SF Mono","Cascadia Code","Consolas",monospace;margin-bottom:20px;letter-spacing:2px}
+.load-steps{width:520px;max-width:92vw}
+.load-step{display:flex;align-items:center;gap:14px;padding:12px 16px;margin:4px 0;border-radius:8px;color:rgba(255,255,255,0.3);font-size:13px;transition:all .4s}
+.load-step .ls-icon{font-size:16px;width:28px;text-align:center;flex-shrink:0}
 .load-step .ls-label{flex:1}
-.load-step .ls-status{font-size:12px;flex-shrink:0}
+.load-step .ls-status{font-size:11px;flex-shrink:0}
 .load-step.done{color:rgba(255,255,255,0.7);background:rgba(255,255,255,0.04)}
 .load-step.done .ls-status{color:#27ae60}
 .load-step.active{color:#fff;background:rgba(102,126,234,0.2);box-shadow:0 0 18px rgba(102,126,234,0.12)}
 .load-step.active .ls-status{animation:blink .8s infinite;color:#667eea}
+.load-step.error{color:rgba(255,255,255,0.6);background:rgba(231,76,60,0.1)}
+.load-step.error .ls-status{color:#e74c3c}
+.load-step.cached{color:rgba(255,255,255,0.5)}
+.load-step.cached .ls-status{color:#f39c12}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
-.load-bar{width:480px;max-width:90vw;height:3px;background:rgba(255,255,255,0.08);border-radius:2px;margin-top:20px;overflow:hidden}
-.load-bar .fill{height:100%;background:linear-gradient(90deg,#667eea,#764ba2);border-radius:2px;width:0%;transition:width .4s}
+.load-bar-wrap{width:520px;max-width:92vw;margin-top:16px;display:flex;align-items:center;gap:12px}
+.load-bar{flex:1;height:6px;background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden}
+.load-bar .fill{height:100%;background:linear-gradient(90deg,#667eea,#764ba2);border-radius:3px;width:0%;transition:width .3s}
+.load-pct{color:rgba(255,255,255,0.45);font-size:13px;font-family:"SF Mono","Cascadia Code","Consolas",monospace;white-space:nowrap;min-width:38px;text-align:right}
+.load-phase{color:rgba(255,255,255,0.35);font-size:11px;margin-top:14px;letter-spacing:1px}
+
+/* ═══════════════ BOOK CHECKLIST ═══════════════ */
+.book-check-item{padding:10px 14px;border-bottom:1px solid #f0f0f0;display:flex;align-items:center;gap:10px;cursor:pointer;transition:background .15s}
+.book-check-item:hover{background:#f8f9fc}
+.book-check-item input[type=checkbox]{width:16px;height:16px;cursor:pointer;accent-color:#667eea}
+.book-check-item .bc-name{flex:1;font-size:14px;text-align:left}
+.book-check-item .bc-status{font-size:11px;padding:2px 8px;border-radius:10px;white-space:nowrap}
+.bc-status.signed{background:#e8f5e9;color:#2e7d32}
+.bc-status.verifying{background:#fff3e0;color:#e65100}
+.bc-status.finished{background:#e3f2fd;color:#1565c0}
+.bc-status.ongoing{background:#f3e5f5;color:#7b1fa2}
+.check-actions{display:flex;gap:12px;margin-bottom:12px}
+.check-actions a{font-size:12px;text-decoration:none}
+.check-actions a:hover{text-decoration:underline}
 
 /* ═══════════════ DASHBOARD ═══════════════ */
 .dashboard{display:none}
@@ -71,6 +93,8 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
 .kpi-card{background:#fff;border-radius:10px;padding:18px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,0.06)}
 .kpi-card .val{font-size:24px;font-weight:700}
 .kpi-card .lbl{font-size:12px;color:#888;margin-top:2px}
+.kpi-card .kpi-val{font-size:24px;font-weight:700}
+.kpi-card .kpi-label{font-size:12px;color:#888;margin-top:2px}
 .kpi-card .sub{font-size:11px;color:#aaa;margin-top:2px}
 .c-red{color:#e74c3c}
 .c-orange{color:#e67e22}
@@ -169,25 +193,65 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
       </div>
     </div>
 
+    <!-- Pre-collection Book Picker (shown after login confirmed) -->
+    <div class="selector-card" id="preCollectCard" style="display:none">
+      <label>选择要采集的作品</label>
+      <p style="font-size:12px;color:#888;margin:-4px 0 10px">勾选需要采集的作品，只采集选中项以节省时间</p>
+      <div id="bookCheckList" style="text-align:left;max-height:200px;overflow-y:auto;margin-bottom:8px"></div>
+      <div class="check-actions">
+        <a href="#" onclick="toggleAllBooks(true);return false" style="color:#667eea">全选</a>
+        <a href="#" onclick="toggleAllBooks(false);return false" style="color:#888">取消全选</a>
+        <span style="flex:1"></span>
+        <span id="selectedCount" style="font-size:12px;color:#888"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:16px;margin:8px 0 12px;font-size:13px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#1a1a2e">
+          <input type="radio" name="collectMode" value="standard" checked onchange="updateCollectMode()">
+          <span>标准采集</span><span style="font-size:11px;color:#888">（含章节明细）</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#1a1a2e">
+          <input type="radio" name="collectMode" value="fast" onchange="updateCollectMode()">
+          <span>⚡ 快速采集</span><span style="font-size:11px;color:#888">（仅核心指标，约快3-5倍）</span>
+        </label>
+      </div>
+      <div class="btn-row">
+        <button class="btn-analyze" id="scanBooksBtn" onclick="scanBooks()">🔍 扫描作品列表</button>
+        <button class="btn-analyze" id="startCollectBtn" style="display:none" onclick="startCollection()">📡 开始采集选中作品</button>
+      </div>
+      <div style="font-size:11px;color:#aaa;margin-top:8px;text-align:center" id="preCollectHint">
+        点击扫描获取番茄后台作品列表（约5秒）
+      </div>
+    </div>
+
     <!-- Book Selector (hidden until collection done) -->
     <div class="selector-card" id="bookSelectCard" style="display:none">
       <label>选择作品</label>
       <select id="bookSelect">
         <option value="">-- 请选择一本书籍 --</option>
       </select>
+      <div style="display:flex;gap:8px;margin:8px 0">
+        <button class="btn-analyze" id="dailyBtn" disabled onclick="quickAnalysis('daily')" style="font-size:13px">📅 昨日快照</button>
+        <button class="btn-analyze" id="weeklyBtn" disabled onclick="quickAnalysis('weekly')" style="font-size:13px;background:linear-gradient(135deg,#667eea,#764ba2)">📊 近七日评估</button>
+      </div>
       <div class="btn-row">
-        <button class="btn-analyze" id="analyzeBtn" disabled onclick="startAnalysis()">📡 开始智能分析</button>
+        <button class="btn-analyze" id="analyzeBtn" disabled onclick="startAnalysis()" style="font-size:14px">🔬 完整智能分析</button>
       </div>
     </div>
   </div>
 
   <!-- ═══════════ DASHBOARD ═══════════ -->
   <div id="dashboard" class="dashboard">
-    <div class="info-bar">
+    <div class="info-bar" style="flex-wrap:wrap;gap:8px">
       <span class="dot"></span>
       <span>实时数据 · <strong id="dashBook"></strong> · <span id="dashTime"></span></span>
       <span style="margin-left:auto;font-size:12px" id="dashStage"></span>
+      <div style="display:flex;gap:6px;margin-left:8px" id="quickBtns">
+        <button onclick="quickAnalysis('daily')" style="padding:4px 10px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer;font-size:12px">📅 昨日快照</button>
+        <button onclick="quickAnalysis('weekly')" style="padding:4px 10px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer;font-size:12px">📊 近七⽇评估</button>
+        <button onclick="quickAnalysis('full')" style="padding:4px 10px;border:1px solid #667eea;border-radius:6px;background:#667eea;color:#fff;cursor:pointer;font-size:12px">🔬 完整分析</button>
+      </div>
     </div>
+    <div id="quickResult" style="display:none;margin-bottom:12px"></div>
 
     <div id="stageBanner"></div>
     <div class="kpi-grid" id="kpiRow"></div>
@@ -249,14 +313,16 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
 
 <!-- ═══════════ LOADING OVERLAY ═══════════ -->
 <div class="load-overlay" id="loadOverlay">
-  <div class="load-title">正在分析数据…</div>
-  <div class="load-steps">
-    <div class="load-step" id="ls1"><span class="ls-icon">📋</span><span class="ls-label">拉取最新数据摘要</span><span class="ls-status"></span></div>
-    <div class="load-step" id="ls2"><span class="ls-icon">📊</span><span class="ls-label">分析流量来源 + 渠道占比</span><span class="ls-status"></span></div>
-    <div class="load-step" id="ls3"><span class="ls-icon">📖</span><span class="ls-label">逐章扫描 · 异常检测</span><span class="ls-status"></span></div>
-    <div class="load-step" id="ls4"><span class="ls-icon">🧠</span><span class="ls-label">智能诊断 + 分阶段建议生成</span><span class="ls-status"></span></div>
+  <div class="load-title" id="loadTitle">正在采集番茄小说数据</div>
+  <div class="load-elapsed" id="loadElapsed">00:00</div>
+  <div class="load-steps" id="loadBookSteps">
+    <!-- populated dynamically as books are collected -->
   </div>
-  <div class="load-bar"><div class="fill" id="loadBarFill"></div></div>
+  <div class="load-bar-wrap">
+    <div class="load-bar"><div class="fill" id="loadBarFill"></div></div>
+    <span class="load-pct" id="loadPct">0%</span>
+  </div>
+  <div class="load-phase" id="loadPhase"></div>
 </div>
 
 <script>
@@ -305,14 +371,18 @@ async function checkSystem() {
   const loginBtn = document.getElementById("loginBtn");
   const sysHint = document.getElementById("sysHint");
 
+  const preCollectCard = document.getElementById("preCollectCard");
+
   if (health?.code !== 0) {
     collectBtn.style.display = "none";
     loginBtn.style.display = "none";
+    preCollectCard.style.display = "none";
     sysHint.textContent = "API 服务异常，请检查服务是否已启动";
     document.getElementById("entryHint").textContent = "API 服务连接失败";
   } else if (loginPending) {
     collectBtn.style.display = "none";
     loginBtn.style.display = "block";
+    preCollectCard.style.display = "none";
     loginBtn.disabled = true;
     loginBtn.textContent = "浏览器已打开，请登录...";
     sysHint.textContent = "请在打开的浏览器窗口中扫码或验证码登录番茄小说";
@@ -322,6 +392,7 @@ async function checkSystem() {
   } else if (!loginReady) {
     collectBtn.style.display = "none";
     loginBtn.style.display = "block";
+    preCollectCard.style.display = "none";
     loginBtn.disabled = false;
     loginBtn.textContent = "设置番茄登录";
     loginBtn.onclick = setupLogin;
@@ -329,11 +400,10 @@ async function checkSystem() {
     document.getElementById("entryHint").textContent = "请先设置番茄小说登录态";
   } else {
     loginBtn.style.display = "none";
-    collectBtn.style.display = "block";
-    collectBtn.disabled = false;
-    collectBtn.onclick = startCollection;
-    sysHint.textContent = "系统就绪";
-    document.getElementById("entryHint").textContent = "系统就绪，点击下方按钮开始采集番茄小说数据";
+    collectBtn.style.display = "none";
+    preCollectCard.style.display = "block";
+    sysHint.textContent = "系统就绪，请扫描作品列表";
+    document.getElementById("entryHint").textContent = "系统就绪，请先扫描番茄后台作品列表";
   }
 
   return { health, tenant };
@@ -411,77 +481,263 @@ function pollLogin() {
   }, 3000);
 }
 
-// ── Phase 2: Real Collection via API ──
-async function startCollection() {
-  const btn = document.getElementById("collectBtn");
+// Collect mode toggle
+function updateCollectMode() {
+  const fastEl = document.querySelector('input[name="collectMode"][value="fast"]');
+  window._collectFastMode = fastEl?.checked || false;
+}
+
+// ── Phase 1.8: Scan & Select Books ──
+let scannedBooks = [];
+
+async function scanBooks() {
+  const btn = document.getElementById("scanBooksBtn");
   btn.disabled = true;
-  btn.textContent = "⏳ 采集中…";
+  btn.textContent = "⏳ 扫描中…";
+  document.getElementById("preCollectHint").textContent = "正在连接番茄后台获取作品列表…";
+  document.getElementById("bookCheckList").innerHTML = "";
+
+  try {
+    const r = await fetch(API + "/books/scan", {
+      method: "POST",
+      headers: { Authorization: AUTH, "Content-Type": "application/json" }
+    });
+    const j = await r.json();
+
+    if (j.code !== 0) {
+      document.getElementById("preCollectHint").textContent = `扫描失败：${j.message}`;
+      btn.textContent = "🔍 重新扫描";
+      btn.disabled = false;
+      return;
+    }
+
+    scannedBooks = j.data.novels || [];
+    if (scannedBooks.length === 0) {
+      document.getElementById("preCollectHint").textContent = "未找到任何作品";
+      btn.textContent = "🔍 重新扫描";
+      btn.disabled = false;
+      return;
+    }
+
+    renderBookChecklist();
+    btn.style.display = "none";
+    document.getElementById("startCollectBtn").style.display = "block";
+    document.getElementById("preCollectHint").textContent = `已扫描 ${scannedBooks.length} 部作品，请勾选要采集的`;
+    updateSelectedCount();
+  } catch (e) {
+    document.getElementById("preCollectHint").textContent = `网络错误：${e.message}`;
+    btn.textContent = "🔍 重新扫描";
+    btn.disabled = false;
+  }
+}
+
+function renderBookChecklist() {
+  const container = document.getElementById("bookCheckList");
+  container.innerHTML = scannedBooks.map((b, i) => {
+    let statusCls = "ongoing";
+    if (b.status && (b.status.includes("已签约") || b.status.includes("签约"))) statusCls = "signed";
+    else if (b.status && (b.status.includes("验证") || b.status.includes("审核"))) statusCls = "verifying";
+    else if (b.status && b.status.includes("完结")) statusCls = "finished";
+
+    return `<label class="book-check-item">
+      <input type="checkbox" checked data-idx="${i}" onchange="updateSelectedCount()">
+      <span class="bc-name">${escHtml(b.name)}</span>
+      <span class="bc-status ${statusCls}">${escHtml(b.status || '连载中')}</span>
+    </label>`;
+  }).join("");
+}
+
+function escHtml(s) {
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function toggleAllBooks(on) {
+  const checks = document.querySelectorAll("#bookCheckList input[type=checkbox]");
+  checks.forEach(c => { c.checked = on; });
+  updateSelectedCount();
+}
+
+function updateSelectedCount() {
+  const checks = document.querySelectorAll("#bookCheckList input[type=checkbox]");
+  const n = Array.from(checks).filter(c => c.checked).length;
+  document.getElementById("selectedCount").textContent = `已选 ${n}/${scannedBooks.length}`;
+  document.getElementById("startCollectBtn").disabled = n === 0;
+  if (n > 0) {
+    document.getElementById("startCollectBtn").textContent = `📡 开始采集选中作品（${n}本）`;
+  }
+}
+
+// ── Phase 2: Collection with Real-time Progress Polling ──
+let pollTimer = null;
+let elapsedTimer = null;
+let collectStartTime = null;
+
+function fmtElapsed(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+}
+
+async function startCollection() {
+  const btn = document.getElementById("startCollectBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ 启动中…";
 
   const overlay = document.getElementById("loadOverlay");
   overlay.classList.add("active");
   document.getElementById("loadTitle").textContent = "正在采集番茄小说数据";
+  document.getElementById("loadElapsed").textContent = "00:00";
+  document.getElementById("loadBookSteps").innerHTML = "";
+  document.getElementById("loadBarFill").style.width = "0%";
+  document.getElementById("loadPct").textContent = "0%";
+  document.getElementById("loadPhase").textContent = "";
 
-  const steps = [
-    { id: "ls1", label: "连接番茄作者后台 · 验证登录态" },
-    { id: "ls2", label: "抓取数据总览 · 昨日收益 + 阅读人数" },
-    { id: "ls3", label: "采集章节质量 · 读完率 / 跟读率 / 流失率" },
-    { id: "ls4", label: "存储数据 · 生成每日日志" },
-  ];
-  const bar = document.getElementById("loadBarFill");
-
-  // Animate steps progressively — advance one step every 3 seconds
-  let animStep = 0;
-  const advanceAnim = () => {
-    if (animStep >= steps.length) return;
-    const el = document.getElementById(steps[animStep].id);
-    el.className = "load-step active";
-    el.querySelector(".ls-status").textContent = "⏳";
-    bar.style.width = ((animStep + 0.5) / steps.length * 100) + "%";
-    animStep++;
-    if (animStep < steps.length) {
-      setTimeout(() => {
-        // Mark previous as done
-        for (let j = 0; j < animStep; j++) {
-          const prev = document.getElementById(steps[j].id);
-          prev.className = "load-step done";
-          prev.querySelector(".ls-status").textContent = "✅";
-        }
-        advanceAnim();
-      }, 3000);
-    }
-  };
-  advanceAnim();
-
-  // Actual collection: call POST /api/v1/collect (blocks until done)
+  // POST to start collection (returns immediately, non-blocking)
   let collectResult = null;
   try {
-    const r = await fetch(API + "/collect?force=true", {
+    let url = API + "/collect?force=true";
+    const checks = document.querySelectorAll("#bookCheckList input[type=checkbox]");
+    const selected = Array.from(checks).filter(c => c.checked).map(c => {
+      const idx = parseInt(c.dataset.idx);
+      return encodeURIComponent(scannedBooks[idx]?.name || "");
+    }).filter(Boolean);
+    if (selected.length > 0 && selected.length < scannedBooks.length) {
+      url += "&books=" + selected.join(",");
+    }
+    if (window._collectFastMode) {
+      url += "&fast=true";
+    }
+    const r = await fetch(url, {
       method: "POST",
       headers: { Authorization: AUTH, "Content-Type": "application/json" }
     });
     collectResult = await r.json();
   } catch (e) {
-    console.error("Collection failed:", e);
+    document.getElementById("loadTitle").textContent = "❌ 网络错误";
+    btn.disabled = false;
+    btn.textContent = "📡 重试采集";
+    return;
   }
 
-  // Collection done — complete animation immediately
-  steps.forEach(s => {
-    const el = document.getElementById(s.id);
-    el.className = "load-step done";
-    el.querySelector(".ls-status").textContent = "✅";
-  });
-  bar.style.width = "100%";
+  if (collectResult.cached || collectResult.code !== 0) {
+    finishCollection(collectResult, btn, overlay);
+    return;
+  }
+
+  // Start elapsed timer
+  collectStartTime = Date.now();
+  elapsedTimer = setInterval(() => {
+    const sec = Math.floor((Date.now() - collectStartTime) / 1000);
+    document.getElementById("loadElapsed").textContent = fmtElapsed(sec);
+  }, 250);
+
+  // Poll for progress
+  pollTimer = setInterval(async () => {
+    let progress;
+    try {
+      const r = await fetch(API + "/collect/progress", {
+        headers: { Authorization: AUTH }
+      });
+      const j = await r.json();
+      progress = j.data;
+    } catch (e) {
+      return;
+    }
+
+    if (!progress) return;
+
+    // Update elapsed from server (more accurate)
+    if (progress.elapsed) {
+      document.getElementById("loadElapsed").textContent = fmtElapsed(progress.elapsed);
+    }
+
+    // Update phase label
+    const phaseLabel = progress.message || "";
+    document.getElementById("loadPhase").textContent = phaseLabel;
+
+    // Render book status list
+    const books = progress.books || [];
+    if (books.length > 0) {
+      const statusIcon = { pending: "○", collecting: "●", done: "✅", error: "❌", cached: "📦" };
+      const statusCls = { pending: "", collecting: "active", done: "done", error: "error", cached: "cached" };
+      document.getElementById("loadBookSteps").innerHTML = books.map(b => {
+        const icon = statusIcon[b.status] || "○";
+        const cls = statusCls[b.status] || "";
+        const errText = b.error ? ` — ${b.error}` : "";
+        return `<div class="load-step ${cls}">
+          <span class="ls-icon">${icon}</span>
+          <span class="ls-label">${escHtml(b.name)}${errText}</span>
+          <span class="ls-status">${b.status === "collecting" ? "⏳" : b.status === "done" ? "✅" : b.status === "error" ? "❌" : b.status === "cached" ? "📦" : ""}</span>
+        </div>`;
+      }).join("");
+    } else {
+      // Before books list is available, show phase steps
+      const phaseSteps = {
+        starting: "正在连接…",
+        browser: "启动无头浏览器",
+        navigate: "导航到番茄作者后台",
+        login_check: "验证登录态",
+        data_page: "进入数据中心",
+        dashboard: "读取作品列表",
+      };
+      const currentPhase = phaseSteps[progress.phase] || progress.phase;
+      if (currentPhase) {
+        document.getElementById("loadBookSteps").innerHTML =
+          `<div class="load-step active"><span class="ls-icon">⏳</span><span class="ls-label">${currentPhase}</span><span class="ls-status"></span></div>`;
+      }
+    }
+
+    // Progress bar based on actual book progress
+    let pct = 0;
+    if (progress.phase === "starting" || progress.phase === "browser") pct = 3;
+    else if (progress.phase === "navigate" || progress.phase === "login_check") pct = 8;
+    else if (progress.phase === "data_page" || progress.phase === "dashboard") pct = 15;
+    else if (progress.phase === "collecting") {
+      const base = 15;
+      const bookPct = progress.totalBooks > 0 ? (progress.currentBook / progress.totalBooks) * 80 : 0;
+      pct = base + bookPct;
+    } else if (progress.phase === "done") pct = 100;
+    else if (progress.phase === "error") pct = 0;
+
+    document.getElementById("loadBarFill").style.width = Math.min(pct, 100) + "%";
+    document.getElementById("loadPct").textContent = Math.round(Math.min(pct, 100)) + "%";
+
+    // Terminal states
+    if (progress.done) {
+      clearInterval(pollTimer);
+      clearInterval(elapsedTimer);
+      pollTimer = null;
+      elapsedTimer = null;
+
+      if (progress.phase === "done") {
+        document.getElementById("loadBarFill").style.width = "100%";
+        document.getElementById("loadPct").textContent = "100%";
+        collectResult = { code: 0, data: progress.result, message: progress.message };
+      } else {
+        collectResult = { code: 1, message: progress.message };
+      }
+      finishCollection(collectResult, btn, overlay);
+    }
+  }, 400);
+}
+
+function finishCollection(collectResult, btn, overlay) {
+  // Stop timers
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
 
   setTimeout(() => {
     overlay.classList.remove("active");
     btn.textContent = collectResult?.code === 0 ? "✅ 采集完成" : "⚠️ 采集异常";
     btn.disabled = true;
 
-    // Show book selector
+    const bookCount = collectResult?.data?.total || collectResult?.data?.books?.length || 0;
+    const elapsed = collectStartTime ? fmtElapsed(Math.floor((Date.now() - collectStartTime) / 1000)) : "";
     document.getElementById("entryTitle").textContent = "请选择查询哪一本书籍数据？";
-    const bookCount = collectResult?.data?.total || collectResult?.data?.length || 0;
     document.getElementById("entryHint").textContent = collectResult?.code === 0
-      ? `采集完成，共 ${bookCount} 本书。选择作品查看智能分析。`
+      ? `采集完成，共 ${bookCount} 本书${elapsed ? ' · 耗时 ' + elapsed : ''}。选择作品查看智能分析。`
       : `采集异常：${collectResult?.message || '未知错误'}`;
 
     document.getElementById("sysCheckCard").style.display = "none";
@@ -499,9 +755,105 @@ async function loadBooks() {
       sel.innerHTML += `<option value="${b.name}">${b.name}（${b.totalChapters || 0}章 · ${(b.cumulativeWords || 0).toLocaleString()}字）</option>`;
     });
     sel.onchange = () => {
-      document.getElementById("analyzeBtn").disabled = !sel.value;
+      const hasVal = !!sel.value;
+      document.getElementById("analyzeBtn").disabled = !hasVal;
+      document.getElementById("dailyBtn").disabled = !hasVal;
+      document.getElementById("weeklyBtn").disabled = !hasVal;
     };
   }
+}
+
+// ── Quick Analysis (daily/weekly) ──
+let currentAnalysisBook = "";
+
+async function quickAnalysis(mode) {
+  const book = document.getElementById("bookSelect").value;
+  if (!book) return;
+  currentAnalysisBook = book;
+
+  if (mode === "full") {
+    document.getElementById("quickResult").style.display = "none";
+    startAnalysis();
+    return;
+  }
+
+  const endpoint = mode === "daily" ? "/daily" : "/weekly";
+  const q = "?book=" + encodeURIComponent(book);
+  const data = await call(endpoint + q);
+
+  if (!data) {
+    document.getElementById("quickResult").innerHTML = '<div class="panel" style="text-align:center;padding:20px;color:#e74c3c">暂无数据</div>';
+    document.getElementById("quickResult").style.display = "block";
+    return;
+  }
+
+  document.getElementById("dashBook").textContent = book;
+  document.getElementById("dashTime").textContent = new Date().toLocaleString();
+  document.getElementById("dashStage").textContent = "";
+  document.getElementById("stageBanner").innerHTML = "";
+  document.getElementById("kpiRow").innerHTML = "";
+  document.getElementById("quickResult").style.display = "block";
+
+  if (mode === "daily") {
+    document.getElementById("quickResult").innerHTML = renderDailyResult(data);
+  } else {
+    document.getElementById("quickResult").innerHTML = renderWeeklyResult(data);
+  }
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function renderDailyResult(d) {
+  const sources = (d.topTrafficSources || []).map(s =>
+    `<span style="display:inline-block;padding:2px 8px;background:#f0f0f0;border-radius:4px;margin:2px;font-size:12px">${s.name} ${s.pct}%</span>`
+  ).join("") || "无数据";
+
+  return `
+    <div class="panel" style="margin-bottom:8px">
+      <h3>📅 昨日数据快照 — ${d.book || ""}</h3>
+      <div style="font-size:13px;color:#888">采集时间：${(d.collectedAt || "").slice(0,16).replace("T"," ")} · 状态：${d.status || "未知"}</div>
+    </div>
+    <div class="kpi-grid">
+      <div class="kpi-card"><div class="kpi-val">¥${d.revenue?.yesterday || 0}</div><div class="kpi-label">昨日收益 <span style="color:${d.revenue?.change >= 0 ? '#27ae60' : '#e74c3c'}">${d.revenue?.changeLabel || ""}</span></div></div>
+      <div class="kpi-card"><div class="kpi-val">${d.readers?.yesterday || 0}</div><div class="kpi-label">阅读量 <span style="color:${d.readers?.change >= 0 ? '#27ae60' : '#e74c3c'}">${d.readers?.changeLabel || ""}</span></div></div>
+      <div class="kpi-card"><div class="kpi-val">${d.avgCompletionRate || 0}%</div><div class="kpi-label">平均读完率</div></div>
+      <div class="kpi-card"><div class="kpi-val">${sources}</div><div class="kpi-label">流量来源 Top3</div></div>
+    </div>
+    <div class="panel"><p style="font-size:15px;text-align:center;color:#1a1a2e;margin:0">${d.summary || ""}</p></div>
+  `;
+}
+
+function renderWeeklyResult(d) {
+  const findings = (d.findings || []).map(f => `<li style="margin:4px 0">${f}</li>`).join("");
+  const trendColors = { rising: "#27ae60", falling: "#e74c3c", stable: "#888" };
+
+  return `
+    <div class="panel" style="margin-bottom:8px">
+      <h3>📊 近七日评估 — ${d.book || ""}</h3>
+      <div style="font-size:13px;color:#888">${d.dateRange?.start || ""} ~ ${d.dateRange?.end || ""} · 总收益 ¥${d.totals?.revenue || 0}</div>
+    </div>
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-val" style="color:${trendColors[d.trends?.revenue?.trend] || '#888'}">${d.trends?.revenue?.label || "N/A"}</div>
+        <div class="kpi-label">收益趋势 · 最高 ¥${d.totals?.bestRevenue || 0}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-val" style="color:${trendColors[d.trends?.readers?.trend] || '#888'}">${d.trends?.readers?.label || "N/A"}</div>
+        <div class="kpi-label">读者趋势</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-val" style="color:${trendColors[d.trends?.completion?.trend] || '#888'}">${d.trends?.completion?.label || "N/A"}</div>
+        <div class="kpi-label">读完率趋势</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-val">${d.totals?.bestDay || "N/A"}</div>
+        <div class="kpi-label">最佳收益日</div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3>🔍 关键发现</h3>
+      <ul style="font-size:14px;line-height:1.8;padding-left:20px">${findings || "<li>数据不足</li>"}</ul>
+    </div>
+  `;
 }
 
 // ── Start Analysis ──
@@ -509,56 +861,47 @@ async function startAnalysis() {
   const book = document.getElementById("bookSelect").value;
   if (!book) return;
 
-  // Show loading
   const overlay = document.getElementById("loadOverlay");
   overlay.classList.add("active");
+  document.getElementById("loadTitle").textContent = "正在进行智能分析...";
+  document.getElementById("loadElapsed").textContent = "";
+  document.getElementById("loadBookSteps").innerHTML = "";
+  document.getElementById("loadBarFill").style.width = "10%";
+  document.getElementById("loadPct").textContent = "10%";
+  document.getElementById("loadPhase").textContent = "正在请求分析数据...";
 
-  const steps = [
-    { id: "ls1", delay: 600 },
-    { id: "ls2", delay: 1400 },
-    { id: "ls3", delay: 2400 },
-    { id: "ls4", delay: 3400 },
-  ];
   const bar = document.getElementById("loadBarFill");
+  const phase = document.getElementById("loadPhase");
 
-  steps.forEach((s, i) => {
-    setTimeout(() => {
-      for (let j = 0; j <= i; j++) {
-        const el = document.getElementById(steps[j].id);
-        if (j < i) {
-          el.className = "load-step done";
-          el.querySelector(".ls-status").textContent = "✅";
-        } else {
-          el.className = "load-step active";
-          el.querySelector(".ls-status").textContent = "⏳";
-        }
-      }
-      bar.style.width = ((i + 1) / steps.length * 100) + "%";
-    }, s.delay);
-  });
+  try {
+    const q = "?book=" + encodeURIComponent(book);
+    bar.style.width = "30%";
+    document.getElementById("loadPct").textContent = "30%";
+    phase.textContent = "正在加载分析报告...";
 
-  // Actually call the real API in parallel with the animation
-  const q = "?book=" + encodeURIComponent(book);
-  const [analysis, chapters, summary] = await Promise.all([
-    call("/analysis" + q),
-    call("/chapters" + q),
-    call("/summary" + q)
-  ]);
+    const [analysis, chapters, summary] = await Promise.all([
+      call("/analysis" + q),
+      call("/chapters" + q),
+      call("/summary" + q)
+    ]);
 
-  // Complete loading animation
-  setTimeout(() => {
-    steps.forEach(s => {
-      const el = document.getElementById(s.id);
-      el.className = "load-step done";
-      el.querySelector(".ls-status").textContent = "✅";
-    });
     bar.style.width = "100%";
+    document.getElementById("loadPct").textContent = "100%";
+    phase.textContent = "分析完成";
 
     setTimeout(() => {
       overlay.classList.remove("active");
       if (analysis) renderDashboard(analysis, chapters, summary, book);
+      else {
+        document.getElementById("entryHint").textContent = "分析数据为空，请确认已采集过数据";
+        document.getElementById("entryHint").style.color = "#e74c3c";
+      }
     }, 500);
-  }, 4000);
+  } catch (e) {
+    overlay.classList.remove("active");
+    document.getElementById("entryHint").textContent = "分析请求失败: " + e.message;
+    document.getElementById("entryHint").style.color = "#e74c3c";
+  }
 }
 
 // ── Render Dashboard ──
@@ -773,7 +1116,10 @@ function renderDashboard(a, ch, summary, bookName) {
 function goBack() {
   document.getElementById("dashboard").classList.remove("active");
   document.getElementById("entryArea").style.display = "block";
-  document.getElementById("analyzeBtn").disabled = !document.getElementById("bookSelect").value;
+  const hasVal = !!document.getElementById("bookSelect").value;
+  document.getElementById("analyzeBtn").disabled = !hasVal;
+  document.getElementById("dailyBtn").disabled = !hasVal;
+  document.getElementById("weeklyBtn").disabled = !hasVal;
   window.scrollTo({top:0,behavior:"smooth"});
 }
 </script>

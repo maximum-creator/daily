@@ -16,7 +16,7 @@ const rateLimit = require("express-rate-limit");
 const { chromium } = require("playwright");
 const { authMiddleware, loadTenants } = require("./lib/auth");
 const { getPage, releasePage, hasProfile, markProfileReady, PROFILES_DIR } = require("./lib/browser-manager");
-const { collectDashboard, collectForBook, saveCollection, switchToBook, jsClick } = require("./lib/collector");
+const { collectDashboard, collectForBook, saveCollection, switchToBook, jsClick, today } = require("./lib/collector");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -60,6 +60,9 @@ const collectLimiter = rateLimit({
 
 // Collection lock: prevent concurrent collection for the same tenant
 const collecting = new Set();
+
+// Progress tracking: tenantId → { phase, step, message, totalBooks, currentBook, done, error, result }
+const collectProgress = new Map();
 
 // Login sessions: track web-initiated login browsers
 // tenantId → { browser, ready: bool }
@@ -280,20 +283,81 @@ app.get("/api/v1/books", (req, res) => {
   res.json({ code: 0, data: Array.from(booksMap.values()) });
 });
 
-// ── POST /api/v1/collect — 触发采集（或读缓存） ──
+// ── POST /api/v1/books/scan — 快速扫描作品列表（不采集数据）──
+app.post("/api/v1/books/scan", collectLimiter, async (req, res) => {
+  const tenantId = req.tenant.id;
+
+  if (collecting.has(tenantId)) {
+    return res.json({ code: 409, message: "该客户正在操作中，请稍后再试" });
+  }
+
+  if (!hasProfile(tenantId)) {
+    return res.json({ code: 400, message: "未配置浏览器登录态，请先登录番茄小说" });
+  }
+
+  collecting.add(tenantId);
+  let page;
+  try {
+    page = await getPage(tenantId);
+
+    await page.goto("https://fanqienovel.com/main/writer/home", {
+      waitUntil: "domcontentloaded", timeout: 20000,
+    }).catch(() => {});
+    try {
+      await page.waitForSelector('[class*="nav-item"], [class*="sidebar"], [class*="menu-item"]', { timeout: 8000 });
+    } catch (e) { /* continue */ }
+    await page.waitForTimeout(800);
+
+    const url = page.url();
+    if (url.includes("login") || url.includes("passport")) {
+      releasePage(tenantId, page);
+      collecting.delete(tenantId);
+      return res.json({ code: 401, message: "番茄小说登录态已过期，请重新登录" });
+    }
+
+    await page.waitForTimeout(300);
+
+    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 500) || "");
+    if (bodyText.includes("请登录") || bodyText.includes("验证码") || bodyText.length < 50) {
+      releasePage(tenantId, page);
+      collecting.delete(tenantId);
+      return res.json({ code: 401, message: "登录态失效或页面加载异常" });
+    }
+
+    await jsClick(page, "小说数据");
+    await page.waitForTimeout(800);
+
+    const dashboard = await collectDashboard(page);
+    const novels = dashboard.novels || [];
+
+    releasePage(tenantId, page);
+    collecting.delete(tenantId);
+
+    res.json({ code: 0, data: { novels }, message: `扫描完成，共 ${novels.length} 部作品` });
+  } catch (e) {
+    if (page) releasePage(tenantId, page);
+    collecting.delete(tenantId);
+    res.status(500).json({ code: 500, message: `扫描异常: ${e.message}` });
+  }
+});
+
+// ── POST /api/v1/collect — 触发采集（异步，通过 /progress 获取进度）──
 app.post("/api/v1/collect", collectLimiter, async (req, res) => {
   const tenantId = req.tenant.id;
-  const today = new Date().toISOString().slice(0, 10);
-  const todayDir = path.join(DATA_DIR, tenantId, today);
+  const todayStr = today();
+  const todayDir = path.join(DATA_DIR, tenantId, todayStr);
   const force = req.query.force === "true" || req.query.force === "1";
+  const booksParam = req.query.books || ""; // comma-separated book names to filter
+  const fastMode = req.query.fast === "true" || req.query.fast === "1";
 
   // Prevent concurrent collection for same tenant
   if (collecting.has(tenantId)) {
     return res.json({ code: 409, message: "该客户正在采集中，请稍后再试" });
   }
 
-  // Check same-day cache (any book collected today counts)
-  if (!force && fs.existsSync(todayDir)) {
+  // Check same-day cache — only return immediately when no book filter and not forcing
+  // With ?books= specified, always proceed to do incremental refresh of those books
+  if (!force && !booksParam && fs.existsSync(todayDir)) {
     const books = fs.readdirSync(todayDir).filter(f =>
       fs.statSync(path.join(todayDir, f)).isDirectory());
     const summaries = [];
@@ -308,7 +372,7 @@ app.post("/api/v1/collect", collectLimiter, async (req, res) => {
         code: 0,
         data: summaries.map(s => ({ date: s.date, book: s.book, collectedAt: s.collectedAt })),
         cached: true,
-        message: `今日已采集 ${summaries.length} 本书，返回缓存`,
+        message: `今日已采集 ${summaries.length} 本书，返回缓存（使用 ?force=true 或 ?books=X 刷新指定书）`,
       });
     }
   }
@@ -321,72 +385,169 @@ app.post("/api/v1/collect", collectLimiter, async (req, res) => {
     });
   }
 
-  // Start collection
+  // Start async collection — store progress, return immediately
+  const startTime = Date.now();
+  const progress = {
+    phase: "starting",
+    message: "正在启动无头浏览器…",
+    totalBooks: 0,
+    currentBook: 0,
+    done: false,
+    startTime,
+    elapsed: 0,
+    books: [], // [{ name, status: "pending"|"collecting"|"done"|"error"|"cached", error }]
+  };
+  collectProgress.set(tenantId, progress);
   collecting.add(tenantId);
+
+  // Return immediately — frontend polls GET /api/v1/collect/progress for updates
+  res.json({ code: 0, data: { async: true, taskId: tenantId }, message: "采集已启动" });
+
+  // Run collection in background
+  runCollection(tenantId, force, todayStr, todayDir, progress, booksParam, fastMode);
+});
+
+// Background collection runner — updates progress map at each step
+async function runCollection(tenantId, force, todayStr, todayDir, progress, booksParam, fastMode) {
   let page;
   try {
+    // ── Step 1: Launch browser ──
+    progress.phase = "browser";
+    progress.message = "正在启动无头浏览器…";
     page = await getPage(tenantId);
-  } catch (e) {
-    collecting.delete(tenantId);
-    return res.status(500).json({ code: 500, message: `浏览器启动失败: ${e.message}` });
-  }
 
-  try {
-    // Navigate to writer home
+    // ── Step 2: Navigate to Fanqie backend ──
+    progress.phase = "navigate";
+    progress.message = "正在导航到番茄小说作者后台…";
+    // domcontentloaded is much faster than "load" — the SPA renders before
+    // all third-party scripts (analytics, tracking) finish loading
     await page.goto("https://fanqienovel.com/main/writer/home", {
-      waitUntil: "networkidle", timeout: 20000,
+      waitUntil: "domcontentloaded", timeout: 20000,
     }).catch(() => {});
-    await page.waitForTimeout(2000);
+    // Wait for SPA to render nav items
+    try {
+      await page.waitForSelector('[class*="nav-item"], [class*="sidebar"], [class*="menu-item"]', { timeout: 8000 });
+    } catch (e) { /* continue even without nav — page might have loaded differently */ }
+    await page.waitForTimeout(800);
 
-    // Check login state
+    // ── Step 3: Check login state ──
+    progress.phase = "login_check";
+    progress.message = "验证登录态…";
     const url = page.url();
     if (url.includes("login") || url.includes("passport")) {
       releasePage(tenantId, page);
       collecting.delete(tenantId);
-      return res.json({
-        code: 401,
-        message: "番茄小说登录态已过期，请重新运行 scripts/quick-login.js 登录",
-      });
+      progress.phase = "error";
+      progress.message = "番茄小说登录态已过期，请重新登录";
+      progress.done = true;
+      progress.error = true;
+      return;
     }
 
-    // Wait for SPA to render
-    try {
-      await page.waitForSelector('[class*="nav-item"], [class*="sidebar"], [class*="menu-item"]', { timeout: 15000 });
-    } catch (e) { /* continue */ }
-    await page.waitForTimeout(1000);
+    // Nav selector already waited after page load — skip redundant wait
+    await page.waitForTimeout(300);
 
     const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 500) || "");
     if (bodyText.includes("请登录") || bodyText.includes("验证码") || bodyText.length < 50) {
       releasePage(tenantId, page);
       collecting.delete(tenantId);
-      return res.json({ code: 401, message: "登录态失效或页面加载异常" });
+      progress.phase = "error";
+      progress.message = "登录态失效或页面加载异常";
+      progress.done = true;
+      progress.error = true;
+      return;
     }
 
-    // Navigate to data center
+    // ── Step 4: Navigate to data center ──
+    progress.phase = "data_page";
+    progress.message = "进入小说数据中心…";
     await jsClick(page, "小说数据");
-    await page.waitForTimeout(2500);
+    await page.waitForTimeout(800);
     const dataPageUrl = page.url();
 
-    // Collect dashboard (book list)
+    // ── Step 5: Collect book list ──
+    progress.phase = "dashboard";
+    progress.message = "读取作品列表…";
     const dashboard = await collectDashboard(page);
-    const targetBooks = dashboard.novels || [];
+    let targetBooks = dashboard.novels || [];
 
     if (targetBooks.length === 0) {
       releasePage(tenantId, page);
       collecting.delete(tenantId);
-      return res.json({ code: 404, message: "未找到任何作品" });
+      progress.phase = "error";
+      progress.message = "未找到任何作品";
+      progress.done = true;
+      progress.error = true;
+      return;
     }
 
-    // Collect for each book
+    // Filter by requested books (if provided) — exact match first, then fuzzy
+    if (booksParam) {
+      const requested = booksParam.split(",").map(s => s.trim()).filter(Boolean);
+      const filtered = [];
+      for (const r of requested) {
+        let found = targetBooks.find(b => b.name === r);
+        if (!found) found = targetBooks.find(b => b.name.includes(r) || r.includes(b.name));
+        if (found && !filtered.includes(found)) filtered.push(found);
+      }
+      if (filtered.length === 0) {
+        releasePage(tenantId, page);
+        collecting.delete(tenantId);
+        progress.phase = "error";
+        progress.message = "指定作品未找到，请检查书名是否正确";
+        progress.done = true;
+        progress.error = true;
+        return;
+      }
+      targetBooks = filtered;
+    }
+
+    // ── Step 6: Collect each book ──
+    progress.totalBooks = targetBooks.length;
+    progress.phase = "collecting";
+    progress.books = targetBooks.map(b => ({ name: b.name, status: "pending" }));
     const collected = [];
-    for (const book of targetBooks) {
-      // Skip if already collected today
+
+    for (let i = 0; i < targetBooks.length; i++) {
+      const book = targetBooks[i];
+      progress.currentBook = i + 1;
+      progress.message = `正在采集《${book.name}》数据 (${i + 1}/${targetBooks.length})`;
+      progress.books[i].status = "collecting";
+
       const bookSafeName = book.name.replace(/[<>:"/\\|?*]/g, "_").trim();
       const summaryPath = path.join(todayDir, bookSafeName, "summary.json");
       if (!force && fs.existsSync(summaryPath)) {
-        const existing = JSON.parse(fs.readFileSync(summaryPath, "utf-8"));
-        if (existing.date === today) {
-          collected.push({ book: book.name, cached: true });
+        let existing;
+        try { existing = JSON.parse(fs.readFileSync(summaryPath, "utf-8")); } catch (e) { existing = null; }
+        if (existing && existing.date === todayStr) {
+          // Incremental update: re-collect fast fields (revenue, worksData)
+          // and merge existing quality + traffic from disk
+          const switched = await switchToBook(page, book.name, dataPageUrl);
+          if (!switched) {
+            collected.push({ book: book.name, cached: true });
+            progress.books[i].status = "cached";
+            continue;
+          }
+          const fastSummary = await collectForBook(page, book.name, book.status || "", true);
+          // Merge preserved data from disk
+          const qPath = path.join(todayDir, bookSafeName, "quality.json");
+          const tPath = path.join(todayDir, bookSafeName, "traffic.json");
+          if (fs.existsSync(qPath)) {
+            try { fastSummary.quality = JSON.parse(fs.readFileSync(qPath, "utf-8")); } catch (e) { /* keep fastSummary.quality */ }
+          }
+          if (fs.existsSync(tPath)) {
+            try { fastSummary.traffic = JSON.parse(fs.readFileSync(tPath, "utf-8")); } catch (e) { /* keep fastSummary.traffic */ }
+          }
+          saveCollection(DATA_DIR, tenantId, fastSummary);
+          progress.books[i].status = "updated";
+          collected.push({
+            book: book.name,
+            status: book.status || "",
+            revenue: fastSummary.revenue?.overview?.yesterdayRevenue || 0,
+            chapters: fastSummary.quality?.chaptersWithCompletionRate || 0,
+            collectedAt: fastSummary.collectedAt,
+            updated: true,
+          });
           continue;
         }
       }
@@ -394,37 +555,61 @@ app.post("/api/v1/collect", collectLimiter, async (req, res) => {
       const switched = await switchToBook(page, book.name, dataPageUrl);
       if (!switched) {
         collected.push({ book: book.name, error: "切换失败" });
+        progress.books[i].status = "error";
+        progress.books[i].error = "切换失败";
         continue;
       }
 
-      const summary = await collectForBook(page, book.name, book.status || "");
-      saveCollection(DATA_DIR, tenantId, summary);
-      collected.push({
-        book: book.name,
-        status: book.status || "",
-        revenue: summary.revenue?.overview?.yesterdayRevenue || 0,
-        chapters: summary.quality?.chaptersWithCompletionRate || 0,
-        collectedAt: summary.collectedAt,
-      });
+      try {
+        const summary = await collectForBook(page, book.name, book.status || "", fastMode);
+        saveCollection(DATA_DIR, tenantId, summary);
+        progress.books[i].status = "done";
+        collected.push({
+          book: book.name,
+          status: book.status || "",
+          revenue: summary.revenue?.overview?.yesterdayRevenue || 0,
+          chapters: summary.quality?.chaptersWithCompletionRate || 0,
+          collectedAt: summary.collectedAt,
+        });
+      } catch (bookErr) {
+        collected.push({ book: book.name, error: bookErr.message });
+        progress.books[i].status = "error";
+        progress.books[i].error = bookErr.message;
+      }
     }
 
-    releasePage(tenantId, page);
+    try { releasePage(tenantId, page); } catch (e) { /* page already closed */ }
     collecting.delete(tenantId);
 
-    res.json({
-      code: 0,
-      data: {
-        date: today,
-        books: collected,
-        total: collected.length,
-      },
-      message: `采集完成，共 ${collected.length} 本书`,
-    });
+    progress.phase = "done";
+    progress.done = true;
+    progress.result = {
+      date: todayStr,
+      books: collected,
+      total: collected.length,
+    };
+    progress.message = `采集完成，共 ${collected.length} 本书`;
+
   } catch (e) {
-    releasePage(tenantId, page);
+    try { if (page) releasePage(tenantId, page); } catch (e2) { /* ignore */ }
     collecting.delete(tenantId);
-    res.status(500).json({ code: 500, message: `采集异常: ${e.message}` });
+    progress.phase = "error";
+    progress.done = true;
+    progress.error = true;
+    progress.message = `采集异常: ${e.message || e}`;
   }
+}
+
+// ── GET /api/v1/collect/progress — 采集进度查询 ──
+app.get("/api/v1/collect/progress", (req, res) => {
+  const tenantId = req.tenant.id;
+  const progress = collectProgress.get(tenantId);
+  if (!progress) {
+    return res.json({ code: 0, data: { phase: "idle" } });
+  }
+  // Compute elapsed dynamically
+  const elapsed = progress.startTime ? Math.round((Date.now() - progress.startTime) / 1000) : 0;
+  res.json({ code: 0, data: { ...progress, elapsed } });
 });
 
 // ── GET /api/v1/report — 趋势报告 ──
@@ -453,8 +638,8 @@ app.get("/api/v1/report", (req, res) => {
   const readers = [], bookmarks = [], words = [];
 
   for (const d of log) {
-    readers.push(d.worksData?.stats?.readers || 0);
-    bookmarks.push(d.worksData?.stats?.bookmarks || 0);
+    readers.push(d.worksData?.["阅读人数"] || 0);
+    bookmarks.push(d.worksData?.["加书架人数"] || 0);
     words.push(d.quality?.cumulativeWords || (d.quality?.avgWordCount * d.quality?.totalChapters) || 0);
   }
 
@@ -477,33 +662,64 @@ app.get("/api/v1/report", (req, res) => {
 // Query params: ?book=<书名>
 app.get("/api/v1/predict", (req, res) => {
   const tenantId = req.tenant.id;
-  const logPath = path.join(DATA_DIR, tenantId, "daily-log.json");
-
-  if (!fs.existsSync(logPath)) {
-    return res.json({ code: 404, message: "暂无数据，需要至少 3 天收益记录" });
-  }
-
-  let log = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  const tenantDir = path.join(DATA_DIR, tenantId);
   const targetBook = req.query.book || "";
+
+  let revenueValues = [];
+
   if (targetBook) {
-    log = log.filter(d => d.book === targetBook || (d.book || "").includes(targetBook) || targetBook.includes(d.book || ""));
+    // Use rich dailyRevenue from revenue.json (30-day history per collection)
+    const dates = fs.existsSync(tenantDir)
+      ? fs.readdirSync(tenantDir).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse()
+      : [];
+    for (const d of dates) {
+      const dateDir = path.join(tenantDir, d);
+      const books = fs.readdirSync(dateDir).filter(f =>
+        fs.statSync(path.join(dateDir, f)).isDirectory()
+      );
+      // Match book name: exact first, then fuzzy
+      const match = books.find(b => b === targetBook)
+        || books.find(b => b.includes(targetBook) || targetBook.includes(b));
+      if (match) {
+        const rp = path.join(dateDir, match, "revenue.json");
+        if (fs.existsSync(rp)) {
+          try {
+            const rev = JSON.parse(fs.readFileSync(rp, "utf-8"));
+            if (rev.dailyRevenue && rev.dailyRevenue.length > 0) {
+              revenueValues = rev.dailyRevenue
+                .map(r => r.total || 0)
+                .filter(v => v > 0);
+              break; // Use most recent date with revenue data
+            }
+          } catch (e) { /* skip corrupted file */ }
+        }
+      }
+    }
   }
 
-  const revenue = log.map(d => d.revenue?.overview?.yesterdayRevenue || 0).filter(v => v > 0);
+  if (revenueValues.length === 0) {
+    // Fallback: use daily-log summary entries
+    const logPath = path.join(DATA_DIR, tenantId, "daily-log.json");
+    if (fs.existsSync(logPath)) {
+      let log = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+      if (targetBook) {
+        log = log.filter(d => d.book === targetBook || (d.book || "").includes(targetBook) || targetBook.includes(d.book || ""));
+      }
+      revenueValues = log.map(d => d.revenue?.overview?.yesterdayRevenue || 0).filter(v => v > 0);
+    }
+  }
 
-  if (revenue.length < 3) {
+  if (revenueValues.length < 3) {
     return res.json({ code: 400, message: "至少需要 3 天有收益数据" });
   }
 
-  // Import predictFuture from main module
-  const { predictFuture } = require("./fanqie-analytics.js");
-  const pred7 = predictFuture(revenue, 7);
-  const pred30 = predictFuture(revenue, 30);
+  const pred7 = predictFuture(revenueValues, 7);
+  const pred30 = predictFuture(revenueValues, 30);
 
   res.json({
     code: 0,
     data: {
-      recentAvg: Math.round(revenue.slice(-3).reduce((a, b) => a + b, 0) / 3 * 100) / 100,
+      recentAvg: Math.round(revenueValues.slice(-3).reduce((a, b) => a + b, 0) / 3 * 100) / 100,
       prediction7d: pred7[pred7.length - 1],
       prediction30d: pred30[pred30.length - 1],
       full7d: pred7,
@@ -666,11 +882,7 @@ app.get("/api/v1/metrics", (req, res) => {
   // Compute key metrics
   const revenue = log.map(d => d.revenue?.overview?.yesterdayRevenue || 0);
   const words = log.map(d => d.quality?.cumulativeWords || 0);
-  const chaptersPerDay = log.map(d => {
-    const cls = d.quality?.chaptersWithCompletionRate || 0;
-    const total = d.quality?.totalChapters || 1;
-    return cls / Math.max(1, log.length);
-  });
+  const chaptersPerDay = log.map(d => d.quality?.chaptersWithCompletionRate || 0);
 
   const totalRevenue = revenue.reduce((a, b) => a + b, 0);
   const totalWords = words[words.length - 1] || 0;
@@ -786,10 +998,10 @@ app.get("/api/v1/analysis", (req, res) => {
     (explicitVerification || searchRatio > 0.5 || daysSinceFirstPublish <= 10)
   );
 
-  const stage = explicitVerification || looksLikeVerification ? "verification"
-    : isFinished ? "finished"
+  const stage = isFinished ? "finished"
     : isSigned ? "signed"
-    : "ongoing";
+    : (explicitVerification || looksLikeVerification) ? "verification"
+    : "unsigned";
 
   // ── Quality Analysis ──
   const milestoneChapters = latest.quality?.milestoneChapters || {};
@@ -1010,7 +1222,8 @@ app.get("/api/v1/analysis", (req, res) => {
 
   // ── Platform Benchmarks ──
   const benchmarkSets = {
-    verification: { completion: 20, follow: 30, searchRatioMax: 80, bookmarkRate: 5 },
+    unsigned: { completion: 10, follow: 15, searchRatioMax: 95, bookmarkRate: 3 },
+    verification: { completion: 20, follow: 30, searchRatioMax: 70, bookmarkRate: 5 },
     signed: { completion: 25, follow: 35, searchRatioMax: 40, bookmarkRate: 8 },
     ongoing: { completion: 15, follow: 25, searchRatioMax: 30, bookmarkRate: 5 },
     finished: { completion: 10, follow: 15, searchRatioMax: 50, bookmarkRate: 3 },
@@ -1031,8 +1244,48 @@ app.get("/api/v1/analysis", (req, res) => {
   //   断更2天以上降权，单章3000-5000字为甜区
   const suggestions = [];
 
+  // ═══ 未签约 ═══
+  if (stage === "unsigned") {
+    const wordCountHint = latestWords < 20000
+      ? `当前仅 ${latestWords.toLocaleString()} 字，距番茄触发验证的最低门槛（通常2-3万字）还有距离。`
+      : `已累积 ${latestWords.toLocaleString()} 字（超过2万字），如果尚未进入验证期，可能原因：①更新频率不稳定（断更>2天会重置进度）②书名/简介/内容涉及敏感题材被系统暂缓③平台当前审核队列较长。`;
+    suggestions.push({
+      priority: "info",
+      category: "platform",
+      title: "尚未签约 — 番茄平台阶段说明",
+      detail: `你的书当前处于「未签约」状态。番茄对新书的流程是：稳定更新→达到字数门槛（约2-3万字）→触发验证期（平台小范围推流测试7-10天）→核心指标达标→签约。${wordCountHint}未签约阶段数据量少是非常正常的，无需焦虑——现在最重要的不是数据，而是稳定日更。`,
+    });
+
+    if (latestWords >= 20000 && daysSinceFirstPublish > 14) {
+      suggestions.push({
+        priority: "medium",
+        category: "platform",
+        title: "字数达标但未进入验证期 — 自查清单",
+        detail: "已满足2万字门槛但超过14天未触发验证，建议检查：①最近7天是否每天都有更新？（断更2天会降低优先级）②书名和简介是否踩了敏感词？（含「系统」「金手指」「穿越」等是正常的，但要避免涉政涉黄）③如果都没有问题，可以给编辑投稿自荐，主动申请验证。④考虑调整书名/简介：在番茄，书名的「卖点清晰度」比「文艺感」重要得多——读者3秒扫过书名，必须一眼知道「这本书讲什么」。",
+      });
+    }
+
+    if (updateScore < 60 && latestWords > 5000) {
+      suggestions.push({
+        priority: "medium",
+        category: "update",
+        title: `更新不稳定（${updateScore}/100）— 可能是迟迟不触发验证的原因`,
+        detail: "番茄对更新频率非常敏感。建议保持每天固定时间更新1-2章，连续7天以上不中断，系统才会认为你是「稳定创作」的作者。断更超过2天可能会重置或延长平台观察期。",
+      });
+    }
+
+    // Don't flag low traffic or zero interaction for unsigned books — it's completely normal
+    if (latestWords > 30000 && explicitVerification === false && isSigned === false && daysSinceFirstPublish > 30) {
+      suggestions.push({
+        priority: "medium",
+        category: "platform",
+        title: "长时间未签约（>30天）— 考虑复盘或换方向",
+        detail: "已超过30天且字数达标但仍未签约，建议认真复盘：①对比同题材Top100作品的前20章，对比节奏、冲突密度、开篇钩子②你的书名和简介是否能吸引目标读者点击？③是否考虑开新书？番茄平台上，有时候换一本新书重新出发比坚持一本「起不来」的老书更明智。",
+      });
+    }
+
   // ═══ 验证期 ═══
-  if (stage === "verification") {
+  } else if (stage === "verification") {
     // ── 平台阶段说明 ──
     const daysLeft = Math.max(0, 10 - daysSinceFirstPublish);
     suggestions.push({
@@ -1327,6 +1580,70 @@ app.get("/api/v1/analysis", (req, res) => {
     }
   }
 
+  // ── Genre Detection & Platform Fit ──
+  const genrePatterns = [
+    { genre: "玄幻/奇幻", channel: "男频", keywords: ["修炼", "穿越", "系统", "异能", "武道", "修仙", "仙侠", "神", "魔", "妖", "魂", "灵", "斗罗", "斗破", "气", "丹", "阵", "剑", "龙", "太古", "万古", "洪荒"] },
+    { genre: "都市", channel: "男频", keywords: ["都市", "重生", "都市重生", "校花", "兵王", "神医", "保镖"] },
+    { genre: "言情/甜宠", channel: "女频", keywords: ["甜宠", "虐恋", "追妻", "腹黑", "王爷", "总裁夫人", "替嫁", "闪婚", "萌宝", "团宠", "甜妻", "王妃", "总裁", "豪门", "职场", "校园"] },
+    { genre: "悬疑/惊悚", channel: "男频", keywords: ["悬疑", "惊悚", "推理", "侦探", "凶案", "诡", "恐怖", "灵异", "鬼", "阴", "墓", "棺材"] },
+    { genre: "历史/权谋", channel: "男频", keywords: ["历史", "权谋", "流民", "江山", "帝王", "皇", "妃", "宫", "朝", "将军", "种田", "天下", "乱世"] },
+    { genre: "科幻/末世", channel: "男频", keywords: ["科幻", "末世", "末日", "丧尸", "星际", "宇宙", "外星", "机甲", "虫族", "文明"] },
+    { genre: "游戏/电竞", channel: "男频", keywords: ["游戏", "电竞", "网游", "副本", "公会", "装备", "BOSS", "刷怪", "打金"] },
+  ];
+  let detectedGenre = null;
+  let detectedChannel = null;
+  const bookText = (bookName + " " + (status || "")).toLowerCase();
+  // 显式频道关键词优先
+  if (bookText.includes("女频")) {
+    detectedChannel = "女频";
+  } else if (bookText.includes("男频")) {
+    detectedChannel = "男频";
+  }
+  for (const p of genrePatterns) {
+    if (p.keywords.some(kw => bookText.includes(kw.toLowerCase()))) {
+      detectedGenre = p.genre;
+      if (!detectedChannel) detectedChannel = p.channel;
+      break;
+    }
+  }
+
+  // 频道适配分析
+  if (detectedChannel) {
+    const channelTips = {
+      "男频": "男频是番茄的基本盘，占平台流量约65%+，读者基数大但头部效应极强。男频读者核心诉求：① 前3章必须有明确「爽点」（金手指/打脸/逆袭），铺垫型开头基本被弃；② 更新速度直接影响推荐权重，建议日更4000+字维持算法偏好；③ 书名要突出「题材+卖点标签」（如「重生都市之XX」），别用文艺写法。男频的竞争本质是「留存率竞争」——谁的读者中途不跳章，谁就能吃到更多推荐。",
+      "女频": "女频在番茄增长迅猛，付费意愿显著高于男频（ARPU约为男频1.5-2倍）。女频读者核心诉求：① CP感是第一位——前几章必须让读者「磕到」，人设要立得快且鲜明；② 书名和封面决定点击率，女频读者对标题敏感度远高于男频，建议用「身份+关系+冲突」公式命名；③ 番茄女频推荐算法更重视书架收藏率和互动数据，鼓励读者加书架比求追读更有效。女频的竞争本质是「情感共鸣竞争」——谁能快速建立读者与角色的情感连接，谁就赢了。",
+    };
+    const channelTip = channelTips[detectedChannel];
+    if (channelTip) {
+      suggestions.push({
+        priority: "info",
+        category: "genre",
+        title: `频道定位：${detectedChannel} — 番茄平台策略建议`,
+        detail: channelTip,
+      });
+    }
+  }
+
+  if (detectedGenre) {
+    const genreTips = {
+      "玄幻/奇幻": "玄幻是番茄第一大品类，读者基数最大但竞争也最激烈。番茄的玄幻读者偏好「开局就爽」的快节奏——如果前10章还在铺垫世界观，大概率被弃。建议：前3章建立主角目标和金手指，每章结尾留悬念钩子。同时注意，玄幻读者对「更新量」极其敏感，签约后日更6000+字才能稳住推荐位。",
+      "都市": "都市在番茄的表现非常稳定，尤其「重生」「校花」等子类有固定读者群。建议在书名中突出「卖点标签」（如「重生」「系统」「神医」），方便算法匹配目标读者。都市文开篇要快——第一章就要让读者看到「金手指激活」的瞬间。",
+      "言情/甜宠": "言情是番茄女频第一品类，付费意愿强。核心是「人设+CP感」——前几章必须让读者磕到CP。番茄女频读者对书名非常敏感，建议直接用「XX总裁的XX小娇妻」之类高识别度命名。甜宠类注意：前三章至少安排一次「亲密互动」（牵手/拥抱/壁咚），这是读者留存的关键节点。",
+      "悬疑/惊悚": "悬疑在番茄属于中等偏小品类，读者偏小众但黏性强。番茄的推荐算法对悬疑类前期数据容忍度较高，但读完率是硬指标——悬疑一旦节奏拖沓读者流失很快。建议每章结尾埋一个新疑点，保持追读惯性。悬疑的「第一案」质量决定生死——不要用平淡案件开局。",
+      "历史/权谋": "历史权谋在番茄偏小众，但精品容易成为「口碑书」。建议：开篇尽量用强冲突开场（如追杀/叛变/政变），不要从日常细节切入。番茄的历史读者有耐心，但第一印象决定追不追。热门方向：三国、大明、架空权谋。",
+      "科幻/末世": "科幻末世在番茄基数不大但增长快。核心是「世界观的奇观感」——第一页就要展示一个让读者惊叹的设定。注意：番茄读者偏年轻，不要堆砌硬科幻术语。末世文前3章建议完成「末日降临→获得能力→第一次危机」的节奏链。",
+      "游戏/电竞": "游戏电竞在番茄有稳定的年轻读者群。建议突出「游戏设定」的独特性和「主角逆袭」的爽感。章节末尾的悬念可以参考游戏副本的BOSS战节奏。电竞类注意：游戏机制描写不要超过内容的20%，读者要的是「赢」的爽感，不是攻略说明书。",
+    };
+    const genreTip = genreTips[detectedGenre] || `${detectedGenre}题材在番茄有一定读者基础，建议研究同题材排行榜前50的书名和简介风格。`;
+    const channelLabel = detectedChannel ? ` · ${detectedChannel}` : "";
+    suggestions.push({
+      priority: "info",
+      category: "genre",
+      title: `题材识别：${detectedGenre}${channelLabel} — 平台适配建议`,
+      detail: genreTip,
+    });
+  }
+
   // 排序（high → medium → info）
   const priorityOrder = { high: 0, medium: 1, info: 2 };
   suggestions.sort((a, b) => (priorityOrder[a.priority] || 0) - (priorityOrder[b.priority] || 0));
@@ -1353,6 +1670,7 @@ app.get("/api/v1/analysis", (req, res) => {
       status,
       stage,
       stageLabel: {
+        unsigned: "未签约",
         verification: "验证期",
         signed: "签约期",
         ongoing: "连载中",
@@ -1410,10 +1728,188 @@ function getMilestone(totalRevenue) {
   };
 }
 
+// ── GET /api/v1/daily — 昨日数据快照 ──
+app.get("/api/v1/daily", (req, res) => {
+  const tenantId = req.tenant.id;
+  const targetBook = req.query.book || "";
+
+  const logData = readDailyLog(tenantId, targetBook);
+  if (!logData || logData.length === 0) {
+    return res.json({ code: 404, message: "暂无数据，请先采集" });
+  }
+
+  // Latest entry
+  const latest = logData[logData.length - 1];
+  const prev = logData.length > 1 ? logData[logData.length - 2] : null;
+
+  const revenue = latest.revenue?.overview?.yesterdayRevenue || 0;
+  const prevRevenue = prev?.revenue?.overview?.yesterdayRevenue || 0;
+  const readers = latest.worksData?.stats?.readers || 0;
+  const prevReaders = prev?.worksData?.stats?.readers || 0;
+
+  // Changes
+  const revChange = prevRevenue > 0 ? Math.round((revenue - prevRevenue) / prevRevenue * 100) : (revenue > 0 ? 100 : 0);
+  const readerChange = prevReaders > 0 ? Math.round((readers - prevReaders) / prevReaders * 100) : (readers > 0 ? 100 : 0);
+
+  // Top traffic sources
+  const traffic = latest.traffic?.sources || {};
+  const topSources = Object.entries(traffic)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([k, v]) => ({ name: k, pct: Math.round(v * 100) / 100 }));
+
+  // Completion rate trend
+  const completionRates = (latest.quality?.chapters || []).map(c => c.completionRate).filter(Boolean);
+  const avgCompletion = completionRates.length > 0
+    ? Math.round(completionRates.reduce((a, b) => a + b, 0) / completionRates.length)
+    : 0;
+
+  res.json({
+    code: 0,
+    data: {
+      book: latest.book,
+      date: latest.date,
+      collectedAt: latest.collectedAt,
+      status: latest.status || "",
+      revenue: { yesterday: revenue, change: revChange, changeLabel: revChange >= 0 ? `↑${revChange}%` : `↓${Math.abs(revChange)}%` },
+      readers: { yesterday: readers, change: readerChange, changeLabel: readerChange >= 0 ? `↑${readerChange}%` : `↓${Math.abs(readerChange)}%` },
+      topTrafficSources: topSources,
+      avgCompletionRate: avgCompletion,
+      summary: revenue > 0
+        ? `昨日收益 ¥${revenue}（${revChange >= 0 ? "+" : ""}${revChange}%），${readers} 人阅读`
+        : `昨日无收益，${readers} 人阅读`,
+    },
+  });
+});
+
+// ── GET /api/v1/weekly — 近七日数据评估 ──
+app.get("/api/v1/weekly", (req, res) => {
+  const tenantId = req.tenant.id;
+  const targetBook = req.query.book || "";
+
+  const logData = readDailyLog(tenantId, targetBook);
+  if (!logData || logData.length < 2) {
+    return res.json({ code: 404, message: "数据不足，至少需要2天数据" });
+  }
+
+  const recent7 = logData.slice(-7);
+  const dates = recent7.map(e => e.date);
+  const revenues = recent7.map(e => e.revenue?.overview?.yesterdayRevenue || 0);
+  const readersList = recent7.map(e => e.worksData?.stats?.readers || 0);
+  const completionRates = recent7.map(e => {
+    const ch = (e.quality?.chapters || []).map(c => c.completionRate).filter(Boolean);
+    return ch.length > 0 ? Math.round(ch.reduce((a, b) => a + b, 0) / ch.length) : 0;
+  });
+
+  // Trend detection
+  const trend = (arr) => {
+    if (arr.length < 2) return "stable";
+    const firstHalf = arr.slice(0, Math.floor(arr.length / 2)).reduce((a, b) => a + b, 0) / Math.floor(arr.length / 2);
+    const secondHalf = arr.slice(Math.ceil(arr.length / 2)).reduce((a, b) => a + b, 0) / (arr.length - Math.ceil(arr.length / 2));
+    if (firstHalf === 0 && secondHalf === 0) return "stable";
+    const change = firstHalf > 0 ? (secondHalf - firstHalf) / firstHalf : (secondHalf > 0 ? 1 : 0);
+    if (change > 0.1) return "rising";
+    if (change < -0.1) return "falling";
+    return "stable";
+  };
+
+  const revTrend = trend(revenues);
+  const readerTrend = trend(readersList);
+  const compTrend = trend(completionRates);
+
+  const trendLabel = { rising: "📈 上升", falling: "📉 下降", stable: "➡️ 持平" };
+
+  // Key findings
+  const findings = [];
+  const totalRev = revenues.reduce((a, b) => a + b, 0);
+  const maxRev = Math.max(...revenues, 0);
+  const maxRevDay = maxRev > 0 ? dates[revenues.indexOf(maxRev)] : "";
+
+  if (revTrend === "rising") findings.push(`7天收益呈上升趋势，最高日 ¥${maxRev}`);
+  else if (revTrend === "falling") findings.push(`7天收益呈下降趋势，需关注`);
+  else findings.push(`7天收益基本持平`);
+
+  if (readerTrend === "rising") findings.push("读者数量稳步增长");
+  if (compTrend === "falling" && completionRates.filter(Boolean).length > 0) {
+    findings.push("读完率呈下降趋势，建议检查近期章节质量");
+  }
+
+  res.json({
+    code: 0,
+    data: {
+      book: targetBook,
+      dateRange: { start: dates[0], end: dates[dates.length - 1] },
+      trends: {
+        revenue: { trend: revTrend, label: trendLabel[revTrend], data: dates.map((d, i) => ({ date: d, value: revenues[i] })) },
+        readers: { trend: readerTrend, label: trendLabel[readerTrend], data: dates.map((d, i) => ({ date: d, value: readersList[i] })) },
+        completion: { trend: compTrend, label: trendLabel[compTrend], data: dates.map((d, i) => ({ date: d, value: completionRates[i] })) },
+      },
+      totals: { revenue: totalRev, bestDay: maxRevDay, bestRevenue: maxRev },
+      findings,
+    },
+  });
+});
+
+// ── Helper: read daily-log.json filtered by book ──
+function readDailyLog(tenantId, targetBook) {
+  const logPath = path.join(DATA_DIR, tenantId, "daily-log.json");
+  if (!fs.existsSync(logPath)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+    const entries = Array.isArray(raw) ? raw : (raw.entries || raw.logs || []);
+    return targetBook ? entries.filter(e => e.book === targetBook) : entries;
+  } catch (e) { return null; }
+}
+
 // ── 404 handler ──
 app.use((req, res) => {
   res.status(404).json({ code: 404, message: "接口不存在" });
 });
+
+// ── Prediction helpers (pure math, extracted from fanqie-analytics.js) ──
+function linearRegression(points) {
+  const n = points.length;
+  if (n < 2) return null;
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += i;
+    sumY += points[i];
+    sumXY += i * points[i];
+    sumX2 += i * i;
+  }
+  const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+  const intercept = (sumY - slope * sumX) / n;
+  const meanY = sumY / n;
+  let ssRes = 0, ssTot = 0;
+  for (let i = 0; i < n; i++) {
+    ssRes += (points[i] - (slope * i + intercept)) ** 2;
+    ssTot += (points[i] - meanY) ** 2;
+  }
+  const r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0;
+  return { slope, intercept, r2 };
+}
+
+function predictFuture(values, days) {
+  const reg = linearRegression(values);
+  if (!reg) return [];
+  const recentAvg = values.slice(-3).reduce((a, b) => a + b, 0) / Math.min(3, values.length);
+  const allAvg = values.reduce((a, b) => a + b, 0) / values.length;
+  const trendWeight = Math.min(0.7, Math.max(0.3, reg.r2));
+  const predictions = [];
+  for (let i = 1; i <= days; i++) {
+    const trendVal = reg.slope * (values.length + i - 1) + reg.intercept;
+    const blended = trendVal * trendWeight + recentAvg * (1 - trendWeight);
+    const optimistic = trendVal * (1 + 0.15 * (i / days));
+    const conservative = trendVal * 0.8 + recentAvg * 0.2;
+    predictions.push({
+      day: i,
+      conservative: Math.max(0, conservative),
+      expected: Math.max(0, blended),
+      optimistic: Math.max(0, optimistic),
+    });
+  }
+  return predictions;
+}
 
 // ── Start ──
 app.listen(PORT, () => {

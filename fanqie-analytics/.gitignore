@@ -1,5 +1,6 @@
 # 敏感信息 - 包含登录态和密钥
 config.json
+config/tenants.json
 
 # 浏览器配置 - 包含登录 Cookies
 .browser-profile/
@@ -7,6 +8,7 @@ browser-profiles/
 
 # 采集数据 - 包含个人收益数据
 data/
+fanqie-data/
 
 # storageState 文件 (已废弃，改用 browser-profiles/)
 storage/
