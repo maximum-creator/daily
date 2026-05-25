@@ -4,6 +4,8 @@
   "description": "番茄小说作家后台数据自动采集分析工具",
   "main": "fanqie-analytics.js",
   "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
     "collect": "node fanqie-analytics.js collect",
     "report": "node fanqie-analytics.js report",
     "setup": "node fanqie-analytics.js setup",
@@ -12,9 +14,14 @@
     "metrics": "node fanqie-analytics.js metrics",
     "weekly": "node fanqie-analytics.js weekly",
     "monthly": "node fanqie-analytics.js monthly",
-    "html": "node fanqie-analytics.js html"
+    "html": "node fanqie-analytics.js html",
+    "login": "node scripts/quick-login.js",
+    "headless-test": "node scripts/headless-test.js"
   },
   "dependencies": {
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "morgan": "^1.10.1",
     "playwright": "^1.52.0"
   }
 }

@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>番茄小说智能诊断 — AI写作平台数据中间件</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;background:#f0f2f5;color:#1a1a2e;min-height:100vh}
+
+/* ── Header ── */
+.header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);color:#fff;padding:18px 28px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:18px;font-weight:600}
+.header .sub{font-size:12px;opacity:0.55;margin-top:2px}
+.header .badge{background:rgba(255,255,255,0.1);padding:5px 14px;border-radius:14px;font-size:12px}
+
+.container{max-width:1100px;margin:0 auto;padding:24px 20px 40px}
+
+/* ═══════════════ EMPTY / SELECTOR ═══════════════ */
+.entry-area{max-width:650px;margin:40px auto 0;text-align:center}
+.entry-area .icon{font-size:64px;display:block;margin-bottom:12px}
+.entry-area h2{font-size:20px;color:#1a1a2e;margin-bottom:6px}
+.entry-area .hint{font-size:13px;color:#888;margin-bottom:24px}
+
+.selector-card{background:#fff;border-radius:12px;padding:24px 28px;box-shadow:0 2px 12px rgba(0,0,0,0.06);text-align:left}
+.selector-card label{font-size:14px;font-weight:600;color:#1a1a2e;display:block;margin-bottom:8px}
+.selector-card select{width:100%;padding:12px 16px;border:2px solid #e0e0e0;border-radius:8px;font-size:14px;background:#fafafa;cursor:pointer;margin-bottom:16px;transition:border-color .2s}
+.selector-card select:focus{border-color:#667eea;outline:none;background:#fff}
+.btn-row{display:flex;gap:10px}
+.btn-analyze{flex:1;padding:14px 0;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:8px;font-size:16px;font-weight:700;cursor:pointer;letter-spacing:1px;transition:all .2s;box-shadow:0 4px 15px rgba(102,126,234,0.35)}
+.btn-analyze:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(102,126,234,0.45)}
+.btn-analyze:disabled{opacity:0.4;cursor:not-allowed;transform:none}
+
+/* ═══════════════ LOADING OVERLAY ═══════════════ */
+.load-overlay{display:none;position:fixed;inset:0;background:rgba(26,26,46,0.97);z-index:100;flex-direction:column;align-items:center;justify-content:center}
+.load-overlay.active{display:flex}
+.load-title{color:#fff;font-size:18px;margin-bottom:28px;letter-spacing:1px}
+.load-steps{width:480px;max-width:90vw}
+.load-step{display:flex;align-items:center;gap:14px;padding:14px 18px;margin:6px 0;border-radius:8px;color:rgba(255,255,255,0.3);font-size:14px;transition:all .4s}
+.load-step .ls-icon{font-size:18px;width:30px;text-align:center;flex-shrink:0}
+.load-step .ls-label{flex:1}
+.load-step .ls-status{font-size:12px;flex-shrink:0}
+.load-step.done{color:rgba(255,255,255,0.7);background:rgba(255,255,255,0.04)}
+.load-step.done .ls-status{color:#27ae60}
+.load-step.active{color:#fff;background:rgba(102,126,234,0.2);box-shadow:0 0 18px rgba(102,126,234,0.12)}
+.load-step.active .ls-status{animation:blink .8s infinite;color:#667eea}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0.3}}
+.load-bar{width:480px;max-width:90vw;height:3px;background:rgba(255,255,255,0.08);border-radius:2px;margin-top:20px;overflow:hidden}
+.load-bar .fill{height:100%;background:linear-gradient(90deg,#667eea,#764ba2);border-radius:2px;width:0%;transition:width .4s}
+
+/* ═══════════════ DASHBOARD ═══════════════ */
+.dashboard{display:none}
+.dashboard.active{display:block}
+
+/* Info bar */
+.info-bar{background:#fff;border-radius:10px;padding:10px 18px;margin-bottom:18px;display:flex;align-items:center;gap:10px;font-size:13px;color:#888;box-shadow:0 1px 4px rgba(0,0,0,0.04)}
+.info-bar .dot{width:8px;height:8px;border-radius:50%;background:#27ae60;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.info-bar strong{color:#1a1a2e}
+
+/* Stage banner */
+.stage-banner{padding:15px 22px;border-radius:10px;margin-bottom:18px;display:flex;align-items:center;gap:14px;font-size:14px}
+.stage-verif{background:linear-gradient(135deg,#fff9e6,#fff3cd);color:#b45309;border-left:5px solid #f59e0b}
+.stage-signed{background:linear-gradient(135deg,#eafaf1,#d4edda);color:#0d6e2d;border-left:5px solid #27ae60}
+.stage-finished{background:linear-gradient(135deg,#eaf2f8,#d6eaf8);color:#1a5276;border-left:5px solid #2980b9}
+.stage-ongoing{background:linear-gradient(135deg,#f5f5f5,#e8e8e8);color:#555;border-left:5px solid #999}
+.stage-banner .st-icon{font-size:30px;flex-shrink:0}
+
+/* KPI */
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+.kpi-card{background:#fff;border-radius:10px;padding:18px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,0.06)}
+.kpi-card .val{font-size:24px;font-weight:700}
+.kpi-card .lbl{font-size:12px;color:#888;margin-top:2px}
+.kpi-card .sub{font-size:11px;color:#aaa;margin-top:2px}
+.c-red{color:#e74c3c}
+.c-orange{color:#e67e22}
+.c-green{color:#27ae60}
+.c-blue{color:#667eea}
+
+/* 2-col */
+.col2{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px}
+.panel{background:#fff;border-radius:10px;padding:20px 24px;box-shadow:0 1px 4px rgba(0,0,0,0.06)}
+.panel h3{font-size:15px;margin-bottom:14px;padding-bottom:8px;border-bottom:2px solid #667eea}
+
+/* Traffic */
+.tf-row{display:flex;align-items:center;gap:8px;margin:5px 0;font-size:13px}
+.tf-row .src{width:60px;text-align:right;flex-shrink:0;color:#666}
+.tf-row .num{width:42px;text-align:right;flex-shrink:0;font-weight:600}
+.tf-row .track{flex:1;height:18px;background:#f0f0f0;border-radius:3px;overflow:hidden}
+.tf-row .fill{height:100%;border-radius:3px;transition:width .5s}
+.tf-warn{margin-top:10px;padding:10px 14px;background:#fff3cd;border-radius:6px;font-size:12px;color:#856404}
+
+/* Metric table */
+.mt-row{display:flex;justify-content:space-between;padding:9px 0;border-bottom:1px solid #f5f5f5;font-size:13px}
+.mt-row:last-child{border:none}
+.mt-l{color:#666}.mt-v{font-weight:600}
+.badge{display:inline-block;padding:1px 8px;border-radius:8px;font-size:10px;font-weight:700;margin-left:5px}
+.badge-red{background:#fce4e4;color:#c0392b}
+.badge-yellow{background:#fef9e7;color:#b8730a}
+.badge-green{background:#d4edda;color:#0d6e2d}
+
+/* Suggestions */
+.sug-item{padding:12px 16px;border-radius:8px;margin:8px 0;font-size:13px;line-height:1.6;border-left:4px solid #ccc}
+.sug-high{background:#ffeaea;border-left-color:#e74c3c}
+.sug-high .sug-title{color:#c0392b;font-weight:700}
+.sug-mid{background:#fef9e7;border-left-color:#f39c12}
+.sug-mid .sug-title{color:#b8730a;font-weight:700}
+.sug-info{background:#eaf2f8;border-left-color:#2980b9}
+.sug-info .sug-title{color:#1a5276;font-weight:700}
+
+/* Anomalies */
+.anom-item{display:flex;align-items:center;padding:6px 10px;margin:3px 0;background:#fef9e7;border-radius:5px;font-size:12px;gap:8px}
+.anom-ch{font-weight:700;color:#b8730a;min-width:50px}
+.anom-title{flex:1;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.anom-tag{padding:1px 8px;border-radius:8px;font-size:10px;font-weight:700;background:#fce4e4;color:#c0392b;flex-shrink:0}
+
+/* Retention flow */
+.ret-flow{display:flex;align-items:center;justify-content:center;gap:14px;padding:8px 0}
+.ret-step{text-align:center;padding:14px 22px;background:#f8f9fc;border-radius:8px}
+.ret-step .pct{font-size:20px;font-weight:700}
+.ret-step .zone{font-size:11px;color:#888;margin-top:2px}
+.ret-arr{font-size:18px;color:#aaa}
+
+/* Back button */
+.back-bar{text-align:center;padding:16px}
+.btn-back{padding:10px 28px;background:#fff;border:1px solid #ddd;border-radius:8px;font-size:13px;color:#888;cursor:pointer}
+.btn-back:hover{background:#fee;color:#c0392b;border-color:#e74c3c}
+
+.footer{text-align:center;color:#bbb;font-size:11px;padding:20px}
+.empty-note{text-align:center;padding:30px;color:#aaa;font-size:13px}
+
+@media(max-width:700px){
+  .kpi-grid{grid-template-columns:repeat(2,1fr)}
+  .col2{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>📊 番茄小说 · 数据诊断</h1>
+    <div class="sub">AI 写作平台数据中间件 — 对接即用 | REST API · 多租户 · 智能分析</div>
+  </div>
+  <div class="badge">API v1</div>
+</div>
+
+<div class="container">
+
+  <!-- ═══════════ PHASE 1+2: System Check + Collection ═══════════ -->
+  <div id="entryArea" class="entry-area">
+    <span class="icon">📡</span>
+    <h2 id="entryTitle">番茄数据采集系统</h2>
+    <p class="hint" id="entryHint">正在检查系统状态…</p>
+
+    <!-- System Status -->
+    <div class="selector-card" id="sysCheckCard">
+      <div style="font-size:14px">
+        <div class="mt-row"><span class="mt-l">API 服务</span><span class="mt-v" id="sysApi">⏳ 检测中…</span></div>
+        <div class="mt-row"><span class="mt-l">登录态</span><span class="mt-v" id="sysLogin">⏳ 检测中…</span></div>
+        <div class="mt-row"><span class="mt-l">今日采集</span><span class="mt-v" id="sysCollected">⏳ 检测中…</span></div>
+      </div>
+      <div class="btn-row" style="margin-top:14px">
+        <button class="btn-analyze" id="loginBtn" style="display:none;background:linear-gradient(135deg,#f39c12,#e67e22)">🔐 设置番茄登录</button>
+        <button class="btn-analyze" id="collectBtn" style="display:none">📡 开始采集数据</button>
+      </div>
+      <div style="font-size:11px;color:#aaa;margin-top:8px;text-align:center" id="sysHint">
+        正在检测系统状态…
+      </div>
+    </div>
+
+    <!-- Book Selector (hidden until collection done) -->
+    <div class="selector-card" id="bookSelectCard" style="display:none">
+      <label>选择作品</label>
+      <select id="bookSelect">
+        <option value="">-- 请选择一本书籍 --</option>
+      </select>
+      <div class="btn-row">
+        <button class="btn-analyze" id="analyzeBtn" disabled onclick="startAnalysis()">📡 开始智能分析</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ DASHBOARD ═══════════ -->
+  <div id="dashboard" class="dashboard">
+    <div class="info-bar">
+      <span class="dot"></span>
+      <span>实时数据 · <strong id="dashBook"></strong> · <span id="dashTime"></span></span>
+      <span style="margin-left:auto;font-size:12px" id="dashStage"></span>
+    </div>
+
+    <div id="stageBanner"></div>
+    <div class="kpi-grid" id="kpiRow"></div>
+
+    <div class="col2">
+      <div>
+        <div class="panel">
+          <h3>📊 流量来源分布</h3>
+          <div id="trafficBars"></div>
+        </div>
+        <div class="panel" style="margin-top:14px">
+          <h3>📝 核心质量指标</h3>
+          <div id="qualityMetrics"></div>
+        </div>
+      </div>
+      <div>
+        <div class="panel">
+          <h3>💡 智能诊断建议</h3>
+          <div id="suggestions"></div>
+        </div>
+        <div class="panel" style="margin-top:14px">
+          <h3>⚠️ 章节异常检测</h3>
+          <div id="anomalies"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-bottom:16px">
+      <h3>📈 读完率变化趋势（三段式对比）</h3>
+      <div id="retentionFlow"></div>
+    </div>
+
+    <!-- Chapter Completion Curve -->
+    <div class="panel" style="margin-bottom:16px">
+      <h3>📉 逐章读完率曲线（点击异常章高亮）</h3>
+      <div id="completionCurve" style="overflow-x:auto;padding:8px 0"></div>
+      <div id="curveLegend" style="font-size:11px;color:#888;text-align:center;margin-top:4px"></div>
+    </div>
+
+    <!-- Funnel + Pacing + Benchmarks -->
+    <div class="col2" style="margin-bottom:16px">
+      <div class="panel">
+        <h3>🔄 读者转化漏斗</h3>
+        <div id="funnelVis"></div>
+      </div>
+      <div class="panel">
+        <h3>📏 平台对标 & 章节节奏</h3>
+        <div id="benchmarkVis"></div>
+      </div>
+    </div>
+
+    <div class="back-bar">
+      <button class="btn-back" onclick="goBack()">↺ 返回 · 重新选择书籍</button>
+    </div>
+  </div>
+
+  <div class="footer">番茄小说数据诊断 · REST API 对接 · 多租户 SaaS · 生产就绪</div>
+</div>
+
+<!-- ═══════════ LOADING OVERLAY ═══════════ -->
+<div class="load-overlay" id="loadOverlay">
+  <div class="load-title">正在分析数据…</div>
+  <div class="load-steps">
+    <div class="load-step" id="ls1"><span class="ls-icon">📋</span><span class="ls-label">拉取最新数据摘要</span><span class="ls-status"></span></div>
+    <div class="load-step" id="ls2"><span class="ls-icon">📊</span><span class="ls-label">分析流量来源 + 渠道占比</span><span class="ls-status"></span></div>
+    <div class="load-step" id="ls3"><span class="ls-icon">📖</span><span class="ls-label">逐章扫描 · 异常检测</span><span class="ls-status"></span></div>
+    <div class="load-step" id="ls4"><span class="ls-icon">🧠</span><span class="ls-label">智能诊断 + 分阶段建议生成</span><span class="ls-status"></span></div>
+  </div>
+  <div class="load-bar"><div class="fill" id="loadBarFill"></div></div>
+</div>
+
+<script>
+const API = "/api/v1";
+const AUTH = "Bearer fa_sk_demo_001";
+
+async function call(path) {
+  const r = await fetch(API + path, { headers: { Authorization: AUTH } });
+  const j = await r.json();
+  return j.code === 0 ? j.data : null;
+}
+
+// ── Phase 1: System Check ──
+let currentTenant = null;
+
+async function checkSystem() {
+  let health, tenant;
+  try {
+    const r = await fetch(API + "/health");
+    const j = await r.json();
+    health = j;
+    tenant = j.tenants?.demo;
+    currentTenant = tenant;
+  } catch (e) {
+    health = null;
+  }
+
+  document.getElementById("sysApi").innerHTML = health?.code === 0 ? '运行中' : '异常';
+  document.getElementById("sysApi").style.color = health?.code === 0 ? '#27ae60' : '#e74c3c';
+
+  const loginReady = tenant?.profileReady;
+  const loginPending = tenant?.loginPending;
+  const hasData = tenant?.dataDays > 0;
+
+  document.getElementById("sysLogin").innerHTML = loginReady
+    ? '已登录'
+    : loginPending ? '浏览器已打开，请登录...' : '未设置';
+  document.getElementById("sysLogin").style.color = loginReady ? '#27ae60' : loginPending ? '#e67e22' : '#e74c3c';
+
+  document.getElementById("sysCollected").innerHTML = hasData
+    ? `有数据（${tenant.dataDays}天）`
+    : '待采集';
+  document.getElementById("sysCollected").style.color = hasData ? '#27ae60' : '#888';
+
+  const collectBtn = document.getElementById("collectBtn");
+  const loginBtn = document.getElementById("loginBtn");
+  const sysHint = document.getElementById("sysHint");
+
+  if (health?.code !== 0) {
+    collectBtn.style.display = "none";
+    loginBtn.style.display = "none";
+    sysHint.textContent = "API 服务异常，请检查服务是否已启动";
+    document.getElementById("entryHint").textContent = "API 服务连接失败";
+  } else if (loginPending) {
+    collectBtn.style.display = "none";
+    loginBtn.style.display = "block";
+    loginBtn.disabled = true;
+    loginBtn.textContent = "浏览器已打开，请登录...";
+    sysHint.textContent = "请在打开的浏览器窗口中扫码或验证码登录番茄小说";
+    document.getElementById("entryHint").textContent = "等待番茄小说登录...";
+    // Poll until login completes
+    setTimeout(checkSystem, 3000);
+  } else if (!loginReady) {
+    collectBtn.style.display = "none";
+    loginBtn.style.display = "block";
+    loginBtn.disabled = false;
+    loginBtn.textContent = "设置番茄登录";
+    loginBtn.onclick = setupLogin;
+    sysHint.textContent = "首次使用需要先登录番茄小说作者后台";
+    document.getElementById("entryHint").textContent = "请先设置番茄小说登录态";
+  } else {
+    loginBtn.style.display = "none";
+    collectBtn.style.display = "block";
+    collectBtn.disabled = false;
+    collectBtn.onclick = startCollection;
+    sysHint.textContent = "系统就绪";
+    document.getElementById("entryHint").textContent = "系统就绪，点击下方按钮开始采集番茄小说数据";
+  }
+
+  return { health, tenant };
+}
+
+(async function systemCheck() {
+  await checkSystem();
+})();
+
+// ── Phase 1.5: Login Setup ──
+async function setupLogin() {
+  const btn = document.getElementById("loginBtn");
+  btn.disabled = true;
+  btn.textContent = "正在打开浏览器...";
+
+  const sysHint = document.getElementById("sysHint");
+  sysHint.textContent = "正在启动浏览器...";
+
+  try {
+    const r = await fetch(API + "/login", {
+      method: "POST",
+      headers: { Authorization: AUTH, "Content-Type": "application/json" }
+    });
+    const j = await r.json();
+
+    if (j.profileReady) {
+      // Already logged in
+      sysHint.textContent = "登录态已就绪";
+      await checkSystem();
+    } else if (j.launching) {
+      // Browser opened, start polling
+      sysHint.textContent = "浏览器已打开，请在浏览器中登录番茄小说";
+      btn.textContent = "浏览器已打开，请登录...";
+      pollLogin();
+    } else {
+      sysHint.textContent = j.message || "启动失败";
+      btn.disabled = false;
+      btn.textContent = "设置番茄登录";
+    }
+  } catch (e) {
+    sysHint.textContent = "网络错误: " + e.message;
+    btn.disabled = false;
+    btn.textContent = "设置番茄登录";
+  }
+}
+
+function pollLogin() {
+  let attempts = 0;
+  const maxAttempts = 60; // 3 minutes
+  const interval = setInterval(async () => {
+    attempts++;
+    try {
+      const r = await fetch(API + "/health");
+      const j = await r.json();
+      const t = j.tenants?.demo;
+      if (t?.profileReady) {
+        clearInterval(interval);
+        document.getElementById("sysHint").textContent = "登录成功！";
+        await checkSystem();
+      } else if (t?.loginPending === false && !t?.profileReady) {
+        clearInterval(interval);
+        document.getElementById("sysHint").textContent = "未检测到登录，请重试";
+        const btn = document.getElementById("loginBtn");
+        btn.disabled = false;
+        btn.textContent = "重新设置番茄登录";
+      }
+    } catch (e) { /* retry */ }
+    if (attempts >= maxAttempts) {
+      clearInterval(interval);
+      document.getElementById("sysHint").textContent = "登录超时，请检查浏览器窗口";
+      const btn = document.getElementById("loginBtn");
+      btn.disabled = false;
+      btn.textContent = "重新设置番茄登录";
+    }
+  }, 3000);
+}
+
+// ── Phase 2: Real Collection via API ──
+async function startCollection() {
+  const btn = document.getElementById("collectBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ 采集中…";
+
+  const overlay = document.getElementById("loadOverlay");
+  overlay.classList.add("active");
+  document.getElementById("loadTitle").textContent = "正在采集番茄小说数据";
+
+  const steps = [
+    { id: "ls1", label: "连接番茄作者后台 · 验证登录态" },
+    { id: "ls2", label: "抓取数据总览 · 昨日收益 + 阅读人数" },
+    { id: "ls3", label: "采集章节质量 · 读完率 / 跟读率 / 流失率" },
+    { id: "ls4", label: "存储数据 · 生成每日日志" },
+  ];
+  const bar = document.getElementById("loadBarFill");
+
+  // Animate steps progressively — advance one step every 3 seconds
+  let animStep = 0;
+  const advanceAnim = () => {
+    if (animStep >= steps.length) return;
+    const el = document.getElementById(steps[animStep].id);
+    el.className = "load-step active";
+    el.querySelector(".ls-status").textContent = "⏳";
+    bar.style.width = ((animStep + 0.5) / steps.length * 100) + "%";
+    animStep++;
+    if (animStep < steps.length) {
+      setTimeout(() => {
+        // Mark previous as done
+        for (let j = 0; j < animStep; j++) {
+          const prev = document.getElementById(steps[j].id);
+          prev.className = "load-step done";
+          prev.querySelector(".ls-status").textContent = "✅";
+        }
+        advanceAnim();
+      }, 3000);
+    }
+  };
+  advanceAnim();
+
+  // Actual collection: call POST /api/v1/collect (blocks until done)
+  let collectResult = null;
+  try {
+    const r = await fetch(API + "/collect?force=true", {
+      method: "POST",
+      headers: { Authorization: AUTH, "Content-Type": "application/json" }
+    });
+    collectResult = await r.json();
+  } catch (e) {
+    console.error("Collection failed:", e);
+  }
+
+  // Collection done — complete animation immediately
+  steps.forEach(s => {
+    const el = document.getElementById(s.id);
+    el.className = "load-step done";
+    el.querySelector(".ls-status").textContent = "✅";
+  });
+  bar.style.width = "100%";
+
+  setTimeout(() => {
+    overlay.classList.remove("active");
+    btn.textContent = collectResult?.code === 0 ? "✅ 采集完成" : "⚠️ 采集异常";
+    btn.disabled = true;
+
+    // Show book selector
+    document.getElementById("entryTitle").textContent = "请选择查询哪一本书籍数据？";
+    const bookCount = collectResult?.data?.total || collectResult?.data?.length || 0;
+    document.getElementById("entryHint").textContent = collectResult?.code === 0
+      ? `采集完成，共 ${bookCount} 本书。选择作品查看智能分析。`
+      : `采集异常：${collectResult?.message || '未知错误'}`;
+
+    document.getElementById("sysCheckCard").style.display = "none";
+    document.getElementById("bookSelectCard").style.display = "block";
+    loadBooks();
+  }, 600);
+}
+
+async function loadBooks() {
+  const books = await call("/books");
+  const sel = document.getElementById("bookSelect");
+  sel.innerHTML = '<option value="">-- 请选择一本书籍 --</option>';
+  if (books && books.length > 0) {
+    books.forEach(b => {
+      sel.innerHTML += `<option value="${b.name}">${b.name}（${b.totalChapters || 0}章 · ${(b.cumulativeWords || 0).toLocaleString()}字）</option>`;
+    });
+    sel.onchange = () => {
+      document.getElementById("analyzeBtn").disabled = !sel.value;
+    };
+  }
+}
+
+// ── Start Analysis ──
+async function startAnalysis() {
+  const book = document.getElementById("bookSelect").value;
+  if (!book) return;
+
+  // Show loading
+  const overlay = document.getElementById("loadOverlay");
+  overlay.classList.add("active");
+
+  const steps = [
+    { id: "ls1", delay: 600 },
+    { id: "ls2", delay: 1400 },
+    { id: "ls3", delay: 2400 },
+    { id: "ls4", delay: 3400 },
+  ];
+  const bar = document.getElementById("loadBarFill");
+
+  steps.forEach((s, i) => {
+    setTimeout(() => {
+      for (let j = 0; j <= i; j++) {
+        const el = document.getElementById(steps[j].id);
+        if (j < i) {
+          el.className = "load-step done";
+          el.querySelector(".ls-status").textContent = "✅";
+        } else {
+          el.className = "load-step active";
+          el.querySelector(".ls-status").textContent = "⏳";
+        }
+      }
+      bar.style.width = ((i + 1) / steps.length * 100) + "%";
+    }, s.delay);
+  });
+
+  // Actually call the real API in parallel with the animation
+  const q = "?book=" + encodeURIComponent(book);
+  const [analysis, chapters, summary] = await Promise.all([
+    call("/analysis" + q),
+    call("/chapters" + q),
+    call("/summary" + q)
+  ]);
+
+  // Complete loading animation
+  setTimeout(() => {
+    steps.forEach(s => {
+      const el = document.getElementById(s.id);
+      el.className = "load-step done";
+      el.querySelector(".ls-status").textContent = "✅";
+    });
+    bar.style.width = "100%";
+
+    setTimeout(() => {
+      overlay.classList.remove("active");
+      if (analysis) renderDashboard(analysis, chapters, summary, book);
+    }, 500);
+  }, 4000);
+}
+
+// ── Render Dashboard ──
+function renderDashboard(a, ch, summary, bookName) {
+  document.getElementById("entryArea").style.display = "none";
+  document.getElementById("dashboard").classList.add("active");
+
+  const q = a.analysis || {};
+  // /analysis nests data under a.analysis; /summary has top-level traffic + quality.cumulativeWords
+  const quality = q.quality || {};
+  const revenue = q.revenue || {};
+  const traf = q.traffic || {};
+  const sug = a.suggestions || [];
+  const anomalies = q.anomalies || [];
+  const trends = q.trends || {};
+  const funnel = q.funnel || {};
+  const pacing = q.pacing || {};
+  const benchmarks = q.benchmarks || {};
+  const trendIcon = { rising: " ↑", falling: " ↓", stable: " →" };
+  const trendCls = { rising: "c-green", falling: "c-red", stable: "" };
+
+  const f = (n, d) => n == null ? "--" : Number(n).toFixed(d || 0);
+  const pct = n => n == null ? "--" : Number(n).toFixed(1) + "%";
+  const cm = n => n == null ? "--" : Number(n).toLocaleString();
+
+  // Info bar
+  document.getElementById("dashBook").textContent = bookName;
+  document.getElementById("dashTime").textContent =
+    "采集时间: " + (summary?.collectedAt || a.collectedAt || "").slice(0,16).replace("T"," ");
+  document.getElementById("dashStage").textContent =
+    (a.stageLabel || a.stage || "").toUpperCase();
+
+  // Stage banner
+  const stCf = {
+    verification: ["stage-verif","⏳","验证期","平台正在用小流量测试本书的留存能力。验证期结束后，根据核心指标表现决定是否开放推荐流量。"],
+    signed: ["stage-signed","✅","已签约","已通过验证，获得平台推荐资源。关注推荐流量占比和付费转化。"],
+    finished: ["stage-finished","🏁","已完结","作品已完本，享受完本推荐窗口和长尾搜索流量。"],
+    ongoing: ["stage-ongoing","📖","连载中","正常连载阶段。保持日更节奏，关注读完率和推荐流量变化。"]
+  };
+  const st = stCf[a.stage] || stCf.ongoing;
+  document.getElementById("stageBanner").innerHTML = `
+    <div class="stage-banner ${st[0]}">
+      <span class="st-icon">${st[1]}</span>
+      <div>
+        <div style="font-weight:700;font-size:15px">${st[2]} — ${st[3]}</div>
+        <div style="font-size:12px;opacity:0.7;margin-top:2px">首发 ${a.daysSinceFirstPublish||"?"} 天 · 数据覆盖 ${q.dataDays||0} 天 · 日均 ${cm(q.avgDailyWords||0)} 字</div>
+      </div>
+    </div>`;
+
+  // KPI
+  const avgComp = quality.avgCompletionRate || 0;
+  const avgFollow = quality.avgFollowRate || 0;
+  const updateScore = q.updateScore || 0;
+  const totalWords = summary?.quality?.cumulativeWords || 0;
+  const totalRevenue = revenue.total || 0;
+  const rpm = totalWords > 0 ? (totalRevenue / totalWords * 1000) : 0;
+
+  document.getElementById("kpiRow").innerHTML = `
+    <div class="kpi-card"><div class="val ${totalRevenue<1?'c-red':totalRevenue<50?'c-orange':'c-green'}">¥${f(totalRevenue,2)}<span class="${trendCls[trends.revenue]||''}" style="font-size:14px">${trendIcon[trends.revenue]||''}</span></div><div class="lbl">累计收益</div><div class="sub">近7天 ¥${f(revenue.recent7d||0,2)}</div></div>
+    <div class="kpi-card"><div class="val ${avgComp<10?'c-red':avgComp<20?'c-orange':'c-green'}">${pct(avgComp)}<span class="${trendCls[trends.completion]||''}" style="font-size:14px">${trendIcon[trends.completion]||''}</span></div><div class="lbl">平均读完率</div><div class="sub">${avgComp<15?'⚠ 低于健康线 20%':'接近健康线'}</div></div>
+    <div class="kpi-card"><div class="val c-blue">${cm(totalWords)}</div><div class="lbl">累计字数</div><div class="sub">千字收益 ¥${f(rpm,3)}</div></div>
+    <div class="kpi-card"><div class="val ${updateScore<60?'c-red':updateScore<90?'c-orange':'c-green'}">${updateScore}分</div><div class="lbl">更新一致性</div><div class="sub">${updateScore>=90?'稳定日更':updateScore>=60?'偶有断更':'频繁断更 ⚠'}</div></div>`;
+
+  // Traffic
+  const sources = summary?.traffic || traf.raw || {};
+  const total = Object.values(sources).reduce((x,y) => x+y, 0);
+  const searchPct = total > 0 ? (sources["搜索"]||0)/total*100 : 0;
+  const colors = {"搜索":"linear-gradient(90deg,#f5576c,#f093fb)","书架":"linear-gradient(90deg,#667eea,#764ba2)","书城":"linear-gradient(90deg,#11998e,#38ef7d)","分类":"linear-gradient(90deg,#f093fb,#f5576c)","继续阅读":"linear-gradient(90deg,#764ba2,#a855f7)","其他":"linear-gradient(90deg,#bdc3c7,#95a5a6)"};
+  if (total > 0) {
+    document.getElementById("trafficBars").innerHTML =
+      Object.entries(sources).sort((a,b) => b[1]-a[1]).map(([k,v]) => {
+        const p = Math.max(v/total*100, 2);
+        return `<div class="tf-row"><span class="src">${k}</span><span class="num">${v}</span><span class="track"><span class="fill" style="width:${p}%;background:${colors[k]||'#999'}"></span></span><span style="font-size:12px;color:#888;width:38px">${(v/total*100).toFixed(1)}%</span></div>`;
+      }).join("") +
+      (searchPct > 50 ? `<div class="tf-warn">⚠️ 搜索占比 ${searchPct.toFixed(0)}% — 平台尚未开放推荐流量，核心指标待提升</div>` : "");
+  } else {
+    document.getElementById("trafficBars").innerHTML = `<div class="empty-note">暂无流量数据</div>`;
+  }
+
+  // Quality
+  document.getElementById("qualityMetrics").innerHTML = `
+    <div class="mt-row"><span class="mt-l">平均读完率</span><span class="mt-v">${pct(avgComp)} <span class="badge ${avgComp<15?'badge-red':avgComp<25?'badge-yellow':'badge-green'}">${avgComp<15?'危险':avgComp<25?'一般':'良好'}</span></span></div>
+    <div class="mt-row"><span class="mt-l">平均跟读率</span><span class="mt-v">${pct(avgFollow)}</span></div>
+    <div class="mt-row"><span class="mt-l">千字收益</span><span class="mt-v">¥${f(rpm,3)}</span></div>
+    <div class="mt-row"><span class="mt-l">日均字数（中位数）</span><span class="mt-v">${cm(q.avgDailyWords||0)} 字 <span class="badge ${(q.avgDailyWords||0)>8000?'badge-red':(q.avgDailyWords||0)<4000?'badge-yellow':'badge-green'}">${(q.avgDailyWords||0)>8000?'过快':(q.avgDailyWords||0)<4000?'偏慢':'甜区'}</span></span></div>
+    <div class="mt-row"><span class="mt-l">首发天数</span><span class="mt-v">${a.daysSinceFirstPublish||"?"} 天</span></div>
+    <div class="mt-row"><span class="mt-l">数据覆盖天数</span><span class="mt-v">${q.dataDays||0} 天</span></div>
+    <div class="mt-row"><span class="mt-l">总流量（昨日）</span><span class="mt-v">${cm(traf.totalTraffic||0)} 人</span></div>`;
+
+  // Suggestions
+  if (sug.length > 0) {
+    document.getElementById("suggestions").innerHTML = sug.map(s => {
+      const cls = s.priority==="high"?"sug-high":s.priority==="medium"?"sug-mid":"sug-info";
+      const icon = s.priority==="high"?"🔴":s.priority==="medium"?"🟡":"🔵";
+      return `<div class="sug-item ${cls}"><div class="sug-title">${icon} ${s.title||s.category}</div><div>${s.detail||""}</div></div>`;
+    }).join("");
+  } else {
+    document.getElementById("suggestions").innerHTML = `<div class="empty-note">暂无特殊建议</div>`;
+  }
+
+  // Anomalies
+  if (anomalies.length > 0) {
+    document.getElementById("anomalies").innerHTML = anomalies.slice(0,8).map(an => `
+      <div class="anom-item">
+        <span class="anom-ch">第${an.chapter}章</span>
+        <span class="anom-title">${an.title||""}</span>
+        <span class="anom-tag">${an.type==="completion_drop"?"读完率暴跌":"跟读率暴跌"}</span>
+        <span style="font-size:11px;color:#888">${an.value}% / 均${an.avg}%</span>
+      </div>`).join("") + (anomalies.length > 8 ? `<div style="font-size:12px;color:#888;padding:8px">...还有 ${anomalies.length-8} 处异常</div>` : "");
+  } else {
+    document.getElementById("anomalies").innerHTML = `<div class="empty-note">未检测到异常章节</div>`;
+  }
+
+  // Retention
+  const early = quality.earlyRetention, mid = quality.midRetention, late = quality.lateRetention;
+  const drop = (early && late) ? early - late : 0;
+  document.getElementById("retentionFlow").innerHTML = `
+    <div class="ret-flow">
+      <div class="ret-step"><div class="pct" style="color:#667eea">${pct(early)}</div><div class="zone">前 1/3 章节</div></div>
+      <span class="ret-arr">→</span>
+      <div class="ret-step"><div class="pct" style="color:#764ba2">${pct(mid)}</div><div class="zone">中 1/3 章节</div></div>
+      <span class="ret-arr">→</span>
+      <div class="ret-step"><div class="pct" style="color:${late>early?'#27ae60':'#e74c3c'}">${pct(late)}</div><div class="zone">后 1/3 章节</div></div>
+    </div>
+    <div style="text-align:center;font-size:13px;margin-top:6px;color:${drop>5?'#e74c3c':drop<-2?'#27ae60':'#888'}">
+      ${drop > 5 ? `⚠ 读完率下滑 ${f(drop,1)} 个百分点 — 读者在后期大量流失` :
+        drop < -2 ? `✓ 后期读完率回升 ${f(-drop,1)} 个百分点 — 内容质量在提升` :
+        `→ 读完率基本稳定`}
+    </div>`;
+
+  // ── Completion Curve Chart ──
+  const curve = q.completionCurve || [];
+  const anomalyChapters = new Set((q.anomalies || []).filter(a => a.type === "completion_drop").map(a => a.chapter));
+  const bigDrop = q.biggestDrop;
+  const maxRate = Math.max(...curve.map(c => c.completionRate), 1);
+
+  if (curve.length > 0) {
+    const barWd = Math.max(8, Math.min(24, Math.floor(900 / curve.length)));
+    document.getElementById("completionCurve").innerHTML =
+      `<div style="display:flex;align-items:flex-end;gap:1px;height:160px;min-width:${curve.length * (barWd + 1)}px;padding:0 4px">
+        ${curve.map(c => {
+          const h = Math.max(2, (c.completionRate / maxRate) * 150);
+          const isAnomaly = anomalyChapters.has(c.chapter);
+          const isDropTarget = bigDrop && c.chapter === bigDrop.to.chapter;
+          const bg = isAnomaly ? '#e74c3c' : isDropTarget ? '#e67e22' : 'linear-gradient(180deg,#667eea,#764ba2)';
+          const border = isDropTarget ? '1px solid #e67e22' : 'none';
+          return `<div title="第${c.chapter}章${c.title?'「'+c.title+'」':''}&#10;读完率: ${(c.completionRate||0).toFixed(1)}%&#10;字数: ${c.wordCount||'?'}"
+            style="flex-shrink:0;width:${barWd}px;height:${h}px;background:${bg};border-radius:2px 2px 0 0;cursor:pointer;transition:opacity .2s;${border};opacity:${isAnomaly||isDropTarget?1:0.7}"
+            onmouseover="this.style.opacity='1';this.style.transform='scaleY(1.05)'"
+            onmouseout="this.style.opacity='${isAnomaly||isDropTarget?1:0.7}';this.style.transform='scaleY(1)'"></div>`;
+        }).join("")}
+      </div>`;
+    const anomalyCount = anomalyChapters.size;
+    document.getElementById("curveLegend").innerHTML =
+      `<span style="color:#667eea">■ 正常</span> &nbsp;
+       ${bigDrop ? `<span style="color:#e67e22">■ 最大跌幅点（第${bigDrop.from.chapter}→第${bigDrop.to.chapter}章，跌${bigDrop.drop.toFixed(1)}%）</span> &nbsp;` : ''}
+       ${anomalyCount > 0 ? `<span style="color:#e74c3c">■ 读完率异常（${anomalyCount}章）</span>` : ''}
+       &nbsp; 鼠标悬停查看详情`;
+  } else {
+    document.getElementById("completionCurve").innerHTML = `<div class="empty-note">暂无逐章数据</div>`;
+    document.getElementById("curveLegend").innerHTML = "";
+  }
+
+  // ── Funnel Visualization ──
+  const fun = funnel || {};
+  const fuReaders = fun.readers || 0;
+  const fuStages = [
+    { label: "阅读", val: fuReaders, color: "#667eea" },
+    { label: "追更", val: fun.followers || 0, rate: fun.followRate || 0, color: "#764ba2" },
+    { label: "加书架", val: fun.bookmarkers || 0, rate: fun.bookmarkRate || 0, color: "#11998e" },
+    { label: "评论", val: fun.commenters || 0, rate: fun.commentRate || 0, color: "#e67e22" },
+  ];
+  const maxVal = Math.max(fuReaders, 1);
+  document.getElementById("funnelVis").innerHTML = fuReaders > 0
+    ? fuStages.map((s, i) => {
+        const w = Math.max(s.val / maxVal * 100, 2);
+        return `<div class="tf-row" style="margin:8px 0">
+          <span class="src" style="width:50px">${s.label}</span>
+          <span class="num" style="width:35px">${s.val}</span>
+          <span class="track" style="height:24px"><span class="fill" style="width:${w}%;background:${s.color};height:100%"></span></span>
+          ${s.rate !== undefined ? `<span style="font-size:11px;color:#888;width:50px">${pct(s.rate)}</span>` : '<span style="width:50px"></span>'}
+        </div>`;
+      }).join("")
+      + `<div style="font-size:12px;color:#888;margin-top:8px;text-align:center">
+        ${fun.followRate < 5 ? '⚠ 追更转化率偏低 — 读者来了但留不住' :
+          fun.followRate > 20 ? '✓ 追更转化率良好' : '→ 转化率一般，有提升空间'}
+      </div>`
+    : `<div class="empty-note">暂无互动数据</div>`;
+
+  // ── Benchmarks & Pacing ──
+  const bm = benchmarks || {};
+  const pc = pacing || {};
+  document.getElementById("benchmarkVis").innerHTML = `
+    <div style="font-size:13px;margin-bottom:12px;font-weight:600;color:#666">📊 平台对标（${a.stageLabel||a.stage||''}）</div>
+    <div class="mt-row" style="font-size:12px"><span class="mt-l">读完率</span><span class="mt-v" style="color:${bm.completionRate?.met?'#27ae60':'#e74c3c'}">${bm.completionRate?.current!=null?pct(bm.completionRate.current):'--'} → 目标 ${bm.completionRate?.target||'?'} ${bm.completionRate?.met?'✅':'❌'}</span></div>
+    <div class="mt-row" style="font-size:12px"><span class="mt-l">追读率</span><span class="mt-v" style="color:${bm.followRate?.met?'#27ae60':'#e74c3c'}">${bm.followRate?.current!=null?pct(bm.followRate.current):'--'} → 目标 ${bm.followRate?.target||'?'} ${bm.followRate?.met?'✅':'❌'}</span></div>
+    <div class="mt-row" style="font-size:12px"><span class="mt-l">搜索占比</span><span class="mt-v" style="color:${bm.searchRatio?.met?'#27ae60':'#e74c3c'}">${bm.searchRatio?.current!=null?bm.searchRatio.current+'%':'--'} → ≤${bm.searchRatio?.target||'?'}% ${bm.searchRatio?.met?'✅':'❌'}</span></div>
+    <div class="mt-row" style="font-size:12px"><span class="mt-l">加书架率</span><span class="mt-v" style="color:${bm.bookmarkRate?.met?'#27ae60':'#e74c3c'}">${bm.bookmarkRate?.current!=null?pct(bm.bookmarkRate.current):'--'} → 目标 ${bm.bookmarkRate?.target||'?'} ${bm.bookmarkRate?.met?'✅':'❌'}</span></div>
+    <div style="margin-top:14px;padding-top:10px;border-top:1px solid #f0f0f0;font-size:12px;color:#888">
+      <strong style="color:#666">📝 章节节奏</strong><br>
+      单章均值: <strong style="color:#1a1a2e">${pc.chapterWordAvg||"--"} 字</strong> ·
+      波动: <strong style="color:#1a1a2e">±${pc.wordStdDev||"--"} 字</strong> ·
+      一致性: <strong style="color:${(pc.consistency||0)>70?'#27ae60':(pc.consistency||0)>40?'#e67e22':'#e74c3c'}">${pc.consistency||0}%</strong>
+      ${pc.wordCompletionCorrelation!=null ? `<br>字数-读完率相关性: <strong style="color:${pc.wordCompletionCorrelation<-0.3?'#e74c3c':'#27ae60'}">${pc.wordCompletionCorrelation}</strong>${pc.wordCompletionCorrelation<-0.3?' ⚠ 字数越多读完率越低':''}` : ''}
+      ${(pc.outliers||[]).length>0 ? `<br>⚠ 字数异常章节: ${pc.outliers.map(o=>'第'+o.chapter+'章').join(', ')}` : ''}
+    </div>
+  `;
+
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+
+function goBack() {
+  document.getElementById("dashboard").classList.remove("active");
+  document.getElementById("entryArea").style.display = "block";
+  document.getElementById("analyzeBtn").disabled = !document.getElementById("bookSelect").value;
+  window.scrollTo({top:0,behavior:"smooth"});
+}
+</script>
+</body>
+</html>

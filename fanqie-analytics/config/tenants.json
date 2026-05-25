@@ -1,0 +1,11 @@
+{
+  "tenants": {
+    "demo": {
+      "apiKey": "fa_sk_demo_001",
+      "name": "演示客户",
+      "plan": "basic",
+      "maxBooks": 20,
+      "createdAt": "2026-05-25"
+    }
+  }
+}

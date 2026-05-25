@@ -21,8 +21,14 @@ function loadConfig() {
     process.exit(1);
   }
   const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+  const browser = raw.browser || "edge";
+  if (!BROWSER_REGISTRY[browser]) {
+    console.warn(`   ⚠ 未知浏览器类型 "${browser}"，回退为 Edge`);
+  }
   return {
-    edgeProfile: raw.edgeProfile || "",  // 空=独立浏览器，不冲突
+    browser: BROWSER_REGISTRY[browser] ? browser : "edge",
+    browserPath: raw.browserPath || "",    // 自定义 exe 路径（可选）
+    edgeProfile: raw.edgeProfile || "",    // 已废弃，保留兼容
     headless: raw.headless !== undefined ? raw.headless : false,
     playwrightPath: raw.playwrightPath || "playwright",
     books: raw.books || [],
@@ -34,32 +40,89 @@ function today() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// Shared revenue milestones — used by doPredict and doMetrics
+const REVENUE_MILESTONES = [
+  { label: "月入 ¥100", target: 100, icon: "🌱" },
+  { label: "月入 ¥500", target: 500, icon: "🌿" },
+  { label: "月入 ¥1000", target: 1000, icon: "🌳" },
+  { label: "月入 ¥5000", target: 5000, icon: "🏆" },
+];
+
 // ── Browser ────────────────────────────────────────────────────────
-// 策略：通过 CDP (Chrome DevTools Protocol) 连接到用户正在使用的 Edge
-// 无需复制 Cookies、无需重新登录、无需额外浏览器
+// 通过 CDP (Chrome DevTools Protocol) 连接到用户浏览器
+// 支持 Edge / Chrome / Brave 等所有 Chromium 内核浏览器
+// 无需复制 Cookies、无需重新登录
 //
 // 流程：
-//   1. 尝试连接 Edge 9222 端口（已有调试服务）
-//   2. 没有 → 关闭 Edge → 用 --remote-debugging-port=9222 重新启动
-//   3. 通过 CDP 连接 → 在默认 Context 新建页面 → 所有登录态天然存在
-//   4. 采集完成只关闭我们的页面，不影响用户其他标签
+//   1. 尝试连接 localhost:9222（已有调试服务）
+//   2. 没有 → 优雅关闭浏览器 → 用 --remote-debugging-port=9222 重新启动
+//   3. CDP 连接 → 在默认 Context 新建页面 → 所有登录态天然存在
+//   4. 采集完成只关闭页面，浏览器保持运行，下次秒级重连
 // ────────────────────────────────────────────────────────────────────
 
 const CDP_PORT = 9222;
 const CDP_URL = `http://localhost:${CDP_PORT}`;
 
-function findEdgeExe() {
-  const candidates = [
-    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-  ];
-  // Also check env-based paths
-  for (const envKey of ["PROGRAMFILES", "ProgramFiles(x86)", "ProgramFiles", "PROGRAMFILES(X86)"]) {
-    const base = process.env[envKey];
-    if (base) candidates.push(path.join(base, "Microsoft", "Edge", "Application", "msedge.exe"));
+// 浏览器注册表 — 添加新浏览器只需在此处增加条目
+const BROWSER_REGISTRY = {
+  edge: {
+    name: "Microsoft Edge",
+    processName: "msedge.exe",
+    exePaths: [
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    ],
+    envPaths: [
+      { env: "PROGRAMFILES", sub: "Microsoft\\Edge\\Application\\msedge.exe" },
+      { env: "ProgramFiles(x86)", sub: "Microsoft\\Edge\\Application\\msedge.exe" },
+      { env: "LOCALAPPDATA", sub: "Microsoft\\Edge\\Application\\msedge.exe" },
+    ],
+  },
+  chrome: {
+    name: "Google Chrome",
+    processName: "chrome.exe",
+    exePaths: [
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    ],
+    envPaths: [
+      { env: "PROGRAMFILES", sub: "Google\\Chrome\\Application\\chrome.exe" },
+      { env: "ProgramFiles(x86)", sub: "Google\\Chrome\\Application\\chrome.exe" },
+      { env: "LOCALAPPDATA", sub: "Google\\Chrome\\Application\\chrome.exe" },
+    ],
+  },
+  brave: {
+    name: "Brave Browser",
+    processName: "brave.exe",
+    exePaths: [
+      "C:\\Program Files\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+      "C:\\Program Files (x86)\\BraveSoftware\\Brave-Browser\\Application\\brave.exe",
+    ],
+    envPaths: [
+      { env: "PROGRAMFILES", sub: "BraveSoftware\\Brave-Browser\\Application\\brave.exe" },
+      { env: "ProgramFiles(x86)", sub: "BraveSoftware\\Brave-Browser\\Application\\brave.exe" },
+      { env: "LOCALAPPDATA", sub: "BraveSoftware\\Brave-Browser\\Application\\brave.exe" },
+    ],
+  },
+};
+
+function findBrowserExe(browserType, customPath) {
+  // Custom path override (portable installs, etc.)
+  if (customPath) {
+    if (fs.existsSync(customPath)) return customPath;
+    console.warn(`   ⚠ 自定义浏览器路径不存在: ${customPath}`);
   }
-  // Deduplicate
+
+  const info = BROWSER_REGISTRY[browserType];
+  if (!info) throw new Error(`不支持的浏览器类型: ${browserType}，可选: ${Object.keys(BROWSER_REGISTRY).join(", ")}`);
+
+  // Collect all candidate paths (deduplicated)
   const seen = new Set();
+  const candidates = [...info.exePaths];
+  for (const { env, sub } of info.envPaths) {
+    const base = process.env[env];
+    if (base) candidates.push(path.join(base, sub));
+  }
   const unique = [];
   for (const c of candidates) {
     const norm = c.replace(/\\/g, "/").toLowerCase();
@@ -85,32 +148,42 @@ async function cdpEndpointReady(timeoutMs = 15000) {
         req.setTimeout(2000, () => { req.destroy(); reject(new Error("timeout")); });
       });
       return true;
-    } catch {}
+    } catch (e) { console.warn("CDP端点就绪检测失败", e.message); }
     await new Promise(r => setTimeout(r, 600));
   }
   return false;
 }
 
-async function launchEdgeWithDebugPort() {
-  const edgeExe = findEdgeExe();
-  if (!edgeExe) throw new Error("找不到 Edge 浏览器，请确认 Edge 已安装");
+async function launchBrowserWithDebugPort(browserType, customPath) {
+  const info = BROWSER_REGISTRY[browserType];
+  if (!info) throw new Error(`不支持的浏览器类型: ${browserType}`);
 
-  console.log("   🔄 重启 Edge (CDP 调试模式)...");
+  const exePath = findBrowserExe(browserType, customPath);
+  if (!exePath) throw new Error(`找不到 ${info.name}，请确认已安装或设置 browserPath`);
 
-  // 关闭正在运行的 Edge，这样可以用 debug port 重新启动
+  console.log(`   🔄 重启 ${info.name} (CDP 调试模式)...`);
+
+  // 策略：先优雅关闭（WM_CLOSE，让浏览器有时间把 session/cookie 写入磁盘），
+  //       超时后再强制终止残留进程。这样最大化保留登录态。
   const { execSync } = require("child_process");
-  try { execSync("taskkill /F /IM msedge.exe >nul 2>&1", { stdio: "ignore" }); } catch {}
+  const procName = info.processName;
+  try {
+    // Step 1: 优雅关闭（无 /F），让浏览器正常保存 session
+    execSync(`taskkill /IM ${procName} >nul 2>&1`, { stdio: "ignore" });
+    console.log(`   ⏳ 等待 ${info.name} 保存会话数据...`);
+    await new Promise(r => setTimeout(r, 3000));
+  } catch { /* 浏览器可能本来就没在运行 */ }
+  // Step 2: 强制清理残留进程（优雅关闭失败的标签页或后台进程）
+  try { execSync(`taskkill /F /IM ${procName} >nul 2>&1`, { stdio: "ignore" }); } catch { /* 无残留 */ }
   await new Promise(r => setTimeout(r, 1500));
 
-  // 启动 Edge，使用默认用户数据目录（保持登录态）+ 开启调试端口
-  // 注意：不传 --restore-last-session，避免复活用户之前关掉的标签页
-  //       登录态存在 User Data 目录，跟标签恢复无关
+  // 启动浏览器，使用默认用户数据目录（保持登录态）+ 开启调试端口
   const { spawn } = require("child_process");
-  const proc = spawn(edgeExe, [
+  const proc = spawn(exePath, [
     `--remote-debugging-port=${CDP_PORT}`,
-    "about:blank",                      // 只开一个干净的空白页
-    "--disable-background-mode",        // 采集完可正常退出
-    "--disable-features=TranslateUI",   // 减少不必要请求
+    "about:blank",
+    "--disable-background-mode",
+    "--disable-features=TranslateUI",
     "--no-first-run",
     "--no-default-browser-check",
   ], {
@@ -119,48 +192,51 @@ async function launchEdgeWithDebugPort() {
   });
   proc.unref();
 
-  console.log("   ⏳ 等待 Edge 就绪...");
+  console.log(`   ⏳ 等待 ${info.name} 就绪...`);
   if (!(await cdpEndpointReady())) {
-    throw new Error("Edge 启动超时，请手动打开 Edge 后重试");
+    throw new Error(`${info.name} 启动超时，请手动打开后重试`);
   }
-  console.log("   ✅ Edge 已启动");
+  console.log(`   ✅ ${info.name} 已启动`);
+  return info;
 }
 
 async function launchBrowser(config) {
   const { chromium } = require(config.playwrightPath || "playwright");
+  const browserType = config.browser || "edge";
+  const info = BROWSER_REGISTRY[browserType] || BROWSER_REGISTRY.edge;
 
-  // CDP 模式使用用户自己的 Edge 窗口，headless 不适用
+  // CDP 模式不支持 headless
   if (config.headless) {
     console.warn("   ⚠ CDP 模式不支持 headless，将使用可见窗口");
   }
 
-  // 1. 尝试连接已运行的 Edge（可能已有调试端口）
+  // 1. 尝试连接已运行的浏览器（可能已有调试端口）
   let cdpBrowser = null;
-  try { cdpBrowser = await chromium.connectOverCDP(CDP_URL); } catch {}
+  try { cdpBrowser = await chromium.connectOverCDP(CDP_URL); } catch (e) { console.warn("CDP连接失败", e.message); }
 
-  // 2. 连接不上 → 重启 Edge 开启调试端口
+  // 2. 连接不上 → 重启浏览器开启调试端口
   if (!cdpBrowser) {
-    console.log("   ⚠ Edge 未开启调试端口，正在重启...");
-    await launchEdgeWithDebugPort();
+    console.warn(`   ⚠ ${info.name} 未开启调试端口，正在重启...`);
+    await launchBrowserWithDebugPort(browserType, config.browserPath);
     cdpBrowser = await chromium.connectOverCDP(CDP_URL);
   }
 
-  console.log("   ✅ 已连接 Edge (CDP) — 登录态完整\n");
+  console.log(`   ✅ 已连接 ${info.name} (CDP) — 登录态完整\n`);
 
   // 3. 在默认 Context 中创建/复用页面（携带所有 Cookies）
-  const context = cdpBrowser.contexts()[0];
+  const contexts = cdpBrowser.contexts();
+  if (!contexts || contexts.length === 0) throw new Error("CDP 连接异常：无法获取浏览器上下文");
+  const context = contexts[0];
   const allPages = context.pages();
   const blankPages = allPages.filter(p => {
     const u = p.url();
-    return u === "about:blank" || u === "about:blank/" || u === "" || u === "edge://newtab/";
+    return u === "about:blank" || u === "about:blank/" || u === "" || u.startsWith("edge://") || u.startsWith("chrome://");
   });
   let page;
 
-  // 优先复用已有的空白页（Edge 启动时我们传了 about:blank）
-  // 这样不产生多余的标签页
+  // 优先复用已有的空白页（启动时我们传了 about:blank）
   if (blankPages.length > 0) {
     page = blankPages[0];
-    // 关闭多余的空白页，只保留一个给脚本用
     for (let i = 1; i < blankPages.length; i++) {
       await blankPages[i].close().catch(() => {});
     }
@@ -168,28 +244,24 @@ async function launchBrowser(config) {
     page = await context.newPage();
   }
 
-  // 4. 返回包装对象 — 对外暴露 BrowserContext-like API
-  //    .close() 清理脚本产生的页面，不动用户的其他标签页
+  // 4. 返回包装对象
   return {
     _cdp: cdpBrowser,
     _context: context,
     _page: page,
+    _browserInfo: info,
 
     pages: () => [page],
     newPage: () => context.newPage(),
     close: async () => {
-      // 关闭脚本页面
       await page.close().catch(() => {});
-      // 清理残留的 about:blank / edge://newtab（Edge 启动时带的）
-      // 只清理空白页，不动用户打开的正常网页
       const remaining = context.pages();
       for (const p of remaining) {
         const u = p.url();
-        if (u === "about:blank" || u === "" || u === "edge://newtab/") {
+        if (u === "about:blank" || u === "" || u.startsWith("edge://") || u.startsWith("chrome://")) {
           await p.close().catch(() => {});
         }
       }
-      // 不调用 cdpBrowser.close() — 那是用户正在使用的 Edge，不能关
     },
   };
 }
@@ -258,29 +330,6 @@ async function switchToBook(page, targetName, dataPageUrl) {
 
   console.log(`   🔄 切换作品: ${targetName}`);
 
-  // Helper: wait for drawer to fully open
-  const waitForDrawerOpen = async () => {
-    try {
-      await page.waitForSelector(".book-drawer-item", { timeout: 5000 });
-    } catch {}
-    await page.waitForTimeout(400);
-  };
-
-  // Helper: wait for drawer to close (signal that book selection took effect)
-  const waitForDrawerClose = async (timeoutMs = 8000) => {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      const isOpen = await page.evaluate(() => {
-        const wrapper = document.querySelector(".byte-drawer-wrapper");
-        if (!wrapper) return false;
-        return !wrapper.classList.contains("byte-drawer-wrapper-hide");
-      });
-      if (!isOpen) return true;
-      await page.waitForTimeout(300);
-    }
-    return false; // drawer didn't close in time
-  };
-
   for (let attempt = 0; attempt < 2; attempt++) {
     // Retry: reload data page to reset broken SPA state
     if (attempt > 0 && dataPageUrl) {
@@ -290,12 +339,7 @@ async function switchToBook(page, targetName, dataPageUrl) {
       if ((await checkBook()) === targetName) return true;
     }
 
-    // Check if drawer is already open (e.g. from dashboard enumeration)
-    const drawerAlreadyOpen = await page.evaluate(() => {
-      const wrapper = document.querySelector(".byte-drawer-wrapper");
-      if (!wrapper) return false;
-      return !wrapper.classList.contains("byte-drawer-wrapper-hide");
-    });
+    const drawerAlreadyOpen = await isDrawerOpen(page);
 
     if (!drawerAlreadyOpen) {
       // Open drawer via dispatchEvent (avoids byte-drawer-mask pointer interception)
@@ -307,12 +351,12 @@ async function switchToBook(page, targetName, dataPageUrl) {
       });
       if (!btnFound && attempt === 0) continue;
       if (!btnFound) {
-        console.log("   ⚠ 找不到切换按钮");
+        console.warn("   ⚠ 找不到切换按钮");
         return false;
       }
     }
 
-    await waitForDrawerOpen();
+    await waitForDrawerOpen(page);
 
     // Find and click target book
     const clicked = await page.evaluate((name) => {
@@ -350,22 +394,22 @@ async function switchToBook(page, targetName, dataPageUrl) {
           ),
         };
       });
-      console.log(`   ⚠ 未找到 "${targetName}" (抽屉中有 ${debugInfo.count} 本书: ${debugInfo.names.join(", ") || "无"})`);
-      await page.evaluate(() => {
-        const mask = document.querySelector(".byte-drawer-mask");
-        if (mask) mask.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      }).catch(() => {});
+      console.warn(`   ⚠ 未找到 "${targetName}" (抽屉中有 ${debugInfo.count} 本书: ${debugInfo.names.join(", ") || "无"})`);
+      await closeDrawer(page);
       await page.waitForTimeout(300);
       return false;
     }
 
     console.log(`   ✅ 选中: ${clicked}`);
 
-    // KEY: wait for drawer to CLOSE — this is the reliable signal that SPA accepted the click
-    // (URL doesn't change in this SPA, so waitForURL is useless)
-    const drawerClosed = await waitForDrawerClose(8000);
-    if (!drawerClosed) {
-      console.log("   ⚠ 抽屉未关闭，尝试继续...");
+    // Wait for drawer to close (reliable signal that SPA accepted the click)
+    const closeStart = Date.now();
+    while (Date.now() - closeStart < 8000) {
+      if (!(await isDrawerOpen(page))) break;
+      await page.waitForTimeout(300);
+    }
+    if (await isDrawerOpen(page)) {
+      console.warn("   ⚠ 抽屉未关闭，尝试继续...");
     }
 
     // Now wait for sidebar book name to update + content area to re-render
@@ -393,13 +437,142 @@ async function switchToBook(page, targetName, dataPageUrl) {
       }
     }
 
-    console.log(`   ⚠ 书名未更新到目标，重试...`);
+    console.warn(`   ⚠ 书名未更新到目标，重试...`);
   }
 
   // Exhausted
   const final = await checkBook();
-  console.log(`   ❌ 切换失败 (当前: "${final}")`);
+  console.error(`   ❌ 切换失败 (当前: "${final}")`);
   return false;
+}
+
+// Switch book on the PROFIT page (收益分析), which uses a MODAL dialog, not a drawer
+async function switchBookOnProfitPage(page, targetName) {
+  const checkBook = () => page.evaluate(() => {
+    const el = document.querySelector(".book-select-info-title");
+    return el?.textContent?.trim() || "";
+  });
+
+  // ALWAYS close any existing modal first (profit page may auto-open it)
+  const modalOpen = await page.evaluate(() => {
+    const w = document.querySelector(".byte-modal-wrapper");
+    return w ? w.getBoundingClientRect().width > 0 : false;
+  });
+  if (modalOpen) {
+    await page.evaluate(() => {
+      const btns = document.querySelectorAll(".byte-modal-footer button");
+      for (const btn of btns) {
+        if (btn.textContent?.trim().includes("取消")) {
+          btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        }
+      }
+    });
+    await page.waitForTimeout(1000);
+  }
+
+  // Now check if already on the correct book
+  if ((await checkBook()) === targetName) return true;
+
+  console.log(`   🔄 切换收益作品: ${targetName}`);
+
+  // Open the modal
+  await page.evaluate(() => {
+    const btn = document.querySelector("button.book-select-switch");
+    if (btn) btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await page.waitForTimeout(2000);
+
+  // Find and click target book in modal (.book-item, NOT .book-drawer-item)
+  const clicked = await page.evaluate((name) => {
+    const items = document.querySelectorAll(".book-item");
+    for (const item of items) {
+      const nameEl = item.querySelector(".book-item-details-name");
+      const text = nameEl?.textContent?.trim() || "";
+      if (text === name) {
+        item.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        return "exact:" + text;
+      }
+    }
+    for (const item of items) {
+      const nameEl = item.querySelector(".book-item-details-name");
+      const text = nameEl?.textContent?.trim() || "";
+      if (text.includes(name) || name.includes(text)) {
+        item.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        return "fuzzy:" + text;
+      }
+    }
+    return "not_found";
+  }, targetName);
+
+  if (clicked === "not_found") {
+    console.warn(`   ⚠ 未找到 "${targetName}"，取消选择`);
+    await page.evaluate(() => {
+      const btns = document.querySelectorAll(".byte-modal-footer button");
+      for (const btn of btns) if (btn.textContent?.trim().includes("取消")) btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await page.waitForTimeout(1000);
+    return false;
+  }
+
+  console.log(`   ✅ 选中: ${clicked}`);
+  await page.waitForTimeout(500);
+
+  // Click confirm button
+  await page.evaluate(() => {
+    const btns = document.querySelectorAll(".byte-modal-footer button");
+    for (const btn of btns) {
+      if (btn.textContent?.trim().includes("确定")) {
+        btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        return;
+      }
+    }
+  });
+
+  // Wait for page refresh after modal confirm
+  await page.waitForTimeout(5000);
+
+  // Verify
+  const final = await checkBook();
+  if (final === targetName || final.includes(targetName) || targetName.includes(final)) {
+    console.log(`   ✅ 已切换到: ${final}`);
+    return true;
+  }
+
+  console.error(`   ❌ 收益切换失败 (当前: "${final}")`);
+  return false;
+}
+
+// ── Drawer Helpers ──────────────────────────────────────────────────
+// The data-center page uses a byte-drawer for book selection.
+// These helpers are shared by switchToBook and collectDashboard.
+
+async function isDrawerOpen(page) {
+  return page.evaluate(() => {
+    const wrapper = document.querySelector(".byte-drawer-wrapper");
+    if (!wrapper) return false;
+    return !wrapper.classList.contains("byte-drawer-wrapper-hide");
+  });
+}
+
+async function waitForDrawerOpen(page) {
+  try {
+    await page.waitForSelector(".book-drawer-item", { timeout: 5000 });
+  } catch { console.warn("   ⚠ 抽屉列表加载超时"); }
+  await page.waitForTimeout(400);
+}
+
+async function closeDrawer(page) {
+  if (!(await isDrawerOpen(page))) return;
+  // Click the mask overlay to dismiss
+  await page.evaluate(() => {
+    const mask = document.querySelector(".byte-drawer-mask");
+    if (mask) mask.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  // Wait up to 5s for drawer to actually close
+  for (let i = 0; i < 10; i++) {
+    if (!(await isDrawerOpen(page))) return;
+    await page.waitForTimeout(500);
+  }
 }
 
 // ── Data Collectors ────────────────────────────────────────────────
@@ -466,46 +639,28 @@ async function collectDashboard(page) {
         const btn = document.querySelector("button.book-select-switch");
         if (btn) btn.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
-      // Wait for drawer items to actually render
-      try { await page.waitForSelector(".book-drawer-book-name", { timeout: 5000 }); } catch {}
-      await page.waitForTimeout(500);
+      await waitForDrawerOpen(page);
       const drawerBooks = await page.evaluate(() => {
         const items = document.querySelectorAll(".book-drawer-item");
         return Array.from(items).map(item => {
           const nameEl = item.querySelector(".book-drawer-book-name");
-          return {
-            name: nameEl?.textContent?.trim() || "",
-            selected: item.classList.contains("selected"),
-          };
+          const name = nameEl?.textContent?.trim() || "";
+          // Status/ranking in spans next to the name element, or deduce from item text
+          const full = item.textContent?.trim() || "";
+          const afterName = full.slice(full.indexOf(name) + name.length).trim();
+          // Status: 连载中 / 已完结 / 已下架
+          const status = afterName.match(/连载中|已完结|已下架/)?.[0] || "";
+          // Ranking: 未上榜 / 第X名 / 上榜
+          const ranking = afterName.match(/第\d+名|未上榜|上榜/)?.[0] || "";
+          return { name, selected: item.classList.contains("selected"), status, ranking };
         });
       });
       for (const b of drawerBooks) {
-        allBooks.push({ name: b.name, status: b.name === currentBook ? novelNames[0]?.status || "" : "" });
+        allBooks.push({ name: b.name, status: b.status, ranking: b.ranking });
       }
-      // Close drawer — try mask click first, then Escape key
-      await page.evaluate(() => {
-        const mask = document.querySelector(".byte-drawer-mask");
-        if (mask) mask.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      }).catch(() => {});
-      // Also press Escape to ensure drawer closes
-      await page.keyboard.press("Escape");
-      await page.waitForTimeout(800);
-      // Verify drawer actually closed
-      const stillOpen = await page.evaluate(() => {
-        const wrapper = document.querySelector(".byte-drawer-wrapper");
-        if (!wrapper) return false;
-        return !wrapper.classList.contains("byte-drawer-wrapper-hide");
-      });
-      if (stillOpen) {
-        // Force close: click mask again
-        await page.evaluate(() => {
-          const mask = document.querySelector(".byte-drawer-mask");
-          if (mask) mask.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        }).catch(() => {});
-        await page.waitForTimeout(500);
-      }
+      await closeDrawer(page);
     } catch (e) {
-      // If drawer enumeration fails, fall back to text-based list
+      console.warn("抽屉枚举失败，回退到文本解析", e.message);
     }
   }
 
@@ -519,19 +674,14 @@ async function collectDashboard(page) {
     });
   })();
 
-  // Parse calendar data if present
-  const calendarData = {};
-  const yearIdx = txt.indexOf("2026 年");
-  if (yearIdx < 0) {
-    const monthMatch = txt.match(/(\d{4})年\s*(\d{1,2})月/g);
-    if (monthMatch) { /* calendar in alt format */ }
-  }
-
-  return { novels, calendarData };
+  return { novels };
 }
 
 async function collectWorksData(page) {
   const txt = await page.evaluate(() => document.body?.innerText || "");
+  if (process.env.DEBUG_WORKS) {
+    console.log(`   │  DEBUG 作品数据页面文本:\n${txt.slice(0, 1500)}`);
+  }
 
   const metrics = {};
   const patterns = {
@@ -564,29 +714,184 @@ async function collectWorksData(page) {
   return metrics;
 }
 
-async function collectQuality(page) {
-  // Read available quality data. The default view shows ~5-10 recent chapters
-  // with a chapter range selector and ECharts chart. UI manipulation of the
-  // range selector is unreliable (ByteDance byte-select popup options don't
-  // match standard selectors). Future enhancement: intercept API calls.
+async function collectQuality(page, apiCalls = []) {
+  let chapters = [];
+  let chapterList = [];
+  let milestones = {};
+  let milestoneChapters = {};
+  let cumulativeWords = 0;
+  let dailyWords = {};
 
+  // Phase 1: Try to extract chapter data from captured API responses
+  if (apiCalls.length > 0) {
+    console.log(`   │  捕获到 ${apiCalls.length} 个 API 响应`);
+    // Log captured APIs (compact)
+    for (const call of apiCalls.slice(0, 3)) {
+      const urlShort = call.url.replace(/msToken=[^&]+/, "msToken=...").replace(/a_bogus=[^&]+/, "a_bogus=...");
+      console.log(`   │  API: ${urlShort.slice(0, 140)} (${call.body.length}B)`);
+    }
+
+    // Merge data from ALL matching API responses (different stats_type params give different fields)
+    const chapterMap = new Map(); // key: chapter number, value: merged chapter data
+    let apiChapterCount = 0;
+
+    for (const call of apiCalls) {
+      try {
+        const json = JSON.parse(call.body);
+        const data = json.data || json.result || json;
+        const chData = data.chapter_stats_list || data.chapters || data.chapter_list || data.list || data.records || data.items;
+        if (!chData || !Array.isArray(chData) || chData.length === 0) continue;
+
+        // Debug: dump 1st chapter from each API response to verify field names
+        if (process.env.DEBUG_QUALITY && chData.length > 0) {
+          console.log(`   │  DEBUG 首章字段: ${JSON.stringify(chData[0]).slice(0, 300)}`);
+        }
+
+        for (const ch of chData) {
+          const chNum = (ch.indice || ch.chapter || 0) + 1;
+          const existing = chapterMap.get(chNum) || {};
+
+          // Merge: only overwrite with non-empty/non-zero values
+          const pubTs = ch.publish_time ? parseInt(ch.publish_time) : 0;
+          const pubDate = pubTs > 100000 ? new Date(pubTs * 1000).toISOString().slice(0, 10) : "";
+          const cRate = parseFloat(ch.read_completion_rate);
+          const fRate = parseFloat(ch.follow_read_rate);
+          const lRate = parseFloat(ch.loss_rate);
+
+          chapterMap.set(chNum, {
+            chapter: chNum,
+            title: ch.title || existing.title || "",
+            comments: ch.comment_chapter_cnt || existing.comments || 0,
+            paragraphComments: ch.comment_paragraph_cnt || existing.paragraphComments || 0,
+            urges: ch.reminder_cnt || existing.urges || 0,
+            wordCount: ch.word_number || existing.wordCount || 0,
+            publishTime: pubDate || existing.publishTime || "",
+            completionRate: (!isNaN(cRate) && cRate > 0) ? cRate : (existing.completionRate || null),
+            followReadRate: (!isNaN(fRate) && fRate > 0) ? fRate : (existing.followReadRate || null),
+            lossRate: (!isNaN(lRate) && lRate > 0) ? lRate : (existing.lossRate || null),
+          });
+        }
+        apiChapterCount = Math.max(apiChapterCount, chData.length);
+      } catch (e) {
+        console.warn("章节列表API响应解析失败", e.message);
+      }
+    }
+
+    if (chapterMap.size > 0) {
+      for (const [, ch] of chapterMap) {
+        chapterList.push({
+          chapter: ch.chapter,
+          title: ch.title,
+          comments: ch.comments,
+          paragraphComments: ch.paragraphComments,
+          urges: ch.urges,
+          wordCount: ch.wordCount,
+          publishTime: ch.publishTime,
+          completionRate: ch.completionRate,
+          followReadRate: ch.followReadRate,
+          lossRate: ch.lossRate,
+        });
+        if (ch.completionRate != null) {
+          chapters.push({
+            chapter: ch.chapter,
+            title: ch.title,
+            completionRate: ch.completionRate,
+            followReadRate: ch.followReadRate,
+            lossRate: ch.lossRate,
+          });
+        }
+      }
+      const withFollow = [...chapterMap.values()].filter(c => c.followReadRate != null).length;
+      const withLoss = [...chapterMap.values()].filter(c => c.lossRate != null).length;
+      console.log(`   │  API 章节: ${chapterList.length} 章, 读完率=${chapters.length} 跟读率=${withFollow} 流失率=${withLoss}`);
+    }
+
+    // If we got chapter data from API, try replaying with bigger range to get ALL
+    if (chapterList.length > 0) {
+      for (const call of apiCalls) {
+        try {
+          const url = new URL(call.url);
+          const totalCount = (() => {
+            try { return JSON.parse(call.body).data?.total_count; } catch { return 0; }
+          })();
+          if (totalCount > chapterList.length) {
+            // Expand pagination to get ALL chapters (for books with 500+ chapters)
+            const expandedUrl = new URL(call.url);
+            expandedUrl.searchParams.set("size", String(totalCount));
+            expandedUrl.searchParams.set("page_size", String(totalCount));
+            expandedUrl.searchParams.set("limit", String(totalCount));
+            expandedUrl.searchParams.set("count", String(totalCount));
+            expandedUrl.searchParams.set("page", "1");
+            expandedUrl.searchParams.set("offset", "0");
+            const newBody = await page.evaluate(async (u) => {
+              const res = await fetch(u, { credentials: "include" });
+              return await res.text();
+            }, expandedUrl.toString());
+            const newJson = JSON.parse(newBody);
+            const newData = newJson.data || newJson.result || newJson;
+            const newCh = newData.chapter_stats_list || newData.chapters || newData.chapter_list || newData.list;
+            if (newCh && Array.isArray(newCh) && newCh.length > chapterList.length) {
+              console.log(`   │  扩展成功: ${newCh.length} 章`);
+              chapterList = [];
+              chapters = [];
+              for (const ch of newCh) {
+                const pubTs = ch.publish_time ? parseInt(ch.publish_time) : 0;
+                const pubDate = pubTs > 100000 ? new Date(pubTs * 1000).toISOString().slice(0, 10) : "";
+                const cRate = parseFloat(ch.read_completion_rate);
+                const fRate = parseFloat(ch.follow_read_rate);
+                const lRate = parseFloat(ch.loss_rate);
+                chapterList.push({
+                  chapter: (ch.indice || ch.chapter || 0) + 1,
+                  title: ch.title || ch.name || "",
+                  comments: ch.comment_chapter_cnt || ch.comments || 0,
+                  paragraphComments: ch.comment_paragraph_cnt || ch.paragraph_comments || 0,
+                  urges: ch.reminder_cnt || ch.urges || 0,
+                  wordCount: ch.word_number || ch.word_count || ch.words || 0,
+                  publishTime: pubDate,
+                  completionRate: (!isNaN(cRate) && cRate > 0) ? cRate : null,
+                  followReadRate: (!isNaN(fRate) && fRate > 0) ? fRate : null,
+                  lossRate: (!isNaN(lRate) && lRate > 0) ? lRate : null,
+                });
+                if (!isNaN(cRate) && cRate > 0) {
+                  chapters.push({
+                    chapter: (ch.indice || ch.chapter || 0) + 1,
+                    title: ch.title || "",
+                    completionRate: cRate,
+                    followReadRate: (!isNaN(fRate) && fRate > 0) ? fRate : null,
+                    lossRate: (!isNaN(lRate) && lRate > 0) ? lRate : null,
+                  });
+                }
+              }
+              break;
+            }
+          }
+        } catch (e) {
+          console.warn("日更字数API请求失败", e.message);
+        }
+      }
+    }
+  }
+
+  // Phase 2: Fallback to page text parsing (innerText)
   const txt = await page.evaluate(() => document.body?.innerText || "");
 
-  // Parse chapter completion rates
-  const chapters = [];
+  // Parse chapter completion rates from page text
   const chapterPattern = /第(\d+)章\s+(.+?)\s+读完率\s+([\d.]+)%/g;
   let match;
   while ((match = chapterPattern.exec(txt)) !== null) {
-    chapters.push({
-      chapter: parseInt(match[1]),
-      title: match[2].trim(),
-      completionRate: parseFloat(match[3]),
-    });
+    const chNum = parseInt(match[1]);
+    if (!chapters.find(c => c.chapter === chNum)) {
+      chapters.push({
+        chapter: chNum,
+        title: match[2].trim(),
+        completionRate: parseFloat(match[3]),
+      });
+    }
   }
 
   // Parse chapter list with stats — dynamically detect column count
-  // innerText renders each <td> as a separate line, separated by empty strings
-  const chapterList = [];
+  // Only if API didn't already provide chapter data
+  if (chapterList.length === 0) {
   const lines = txt.split("\n");
   let headerIdx = -1;
   for (let i = 0; i < lines.length; i++) {
@@ -654,10 +959,9 @@ async function collectQuality(page) {
       i++;
     }
   }
+  } // end if chapterList.length === 0
 
-  // Parse milestone completion rates from quality page text
-  // 番茄 shows key milestones on the chart: 十万字完读率, 三十万字完读率, etc.
-  const milestones = {};
+  // Parse milestone completion rates from page text
   const milestonePatterns = [
     { key: "100k", pattern: /十万字完读率\s*[:：]?\s*([\d.]+)%/ },
     { key: "100k", pattern: /10万字完读率\s*[:：]?\s*([\d.]+)%/ },
@@ -673,10 +977,7 @@ async function collectQuality(page) {
   }
 
   // Compute cumulative word counts and find milestone chapters
-  // This tells you at which chapter you hit 10k/30k/50k/100k words
-  // and what the completion rate was at each milestone
-  let cumulativeWords = 0;
-  const milestoneChapters = {};
+  cumulativeWords = 0;
   const thresholds = [10000, 30000, 50000, 100000, 200000, 300000];
   for (const ch of chapterList.sort((a, b) => a.chapter - b.chapter)) {
     cumulativeWords += ch.wordCount || 0;
@@ -692,10 +993,10 @@ async function collectQuality(page) {
   }
 
   // Daily word count: group chapters by publish date
-  const dailyWords = {};
+  dailyWords = {};
   for (const ch of chapterList) {
     if (ch.publishTime) {
-      const day = ch.publishTime.slice(0, 10); // "2026-05-20"
+      const day = ch.publishTime.slice(0, 10);
       dailyWords[day] = (dailyWords[day] || 0) + (ch.wordCount || 0);
     }
   }
@@ -710,60 +1011,123 @@ async function collectQuality(page) {
   };
 }
 
-async function collectTraffic(page) {
-  const txt = await page.evaluate(() => document.body?.innerText || "");
+// stats_type → label mapping for book_increase_v2 API
+// These are daily growth deltas over a 7-day window (not cumulative totals)
+// Exact metric names are inferred from API behavior — labeled generically when uncertain
+const TRAFFIC_METRIC_LABELS = {
+  "24": "新增阅读",
+  "25": "新增书架",
+  "26": "新增追更",
+  "27": "新增评论",
+  "28": "新增催更",
+  "29": "新增互动",
+};
 
+/**
+ * Parse collected traffic API responses into source distribution.
+ *
+ * Key insight: The stats_types in the book_increase_v2 URL are ordered
+ * the SAME as the ECharts legend items on the page. So we can map:
+ *   URL stats_types order → DOM legend order → source names
+ *
+ * When legendNames is provided (from collectTrafficFromPage), each
+ * stats_type row gets the corresponding legend name. Otherwise falls
+ * back to TRAFFIC_METRIC_LABELS (growth metric labels).
+ */
+function collectTrafficFromApi(apiCalls, legendNames = null) {
   const sources = {};
 
-  // Try multiple pattern sets — the page may use different labels over time
-  const sourcePatterns = [
-    // Standard labels
-    ["书城", "书城"],
-    ["分类", "分类"],
-    ["书架", "书架"],
-    ["继续阅读", "继续阅读"],
-    ["搜索", "搜索"],
-    ["其他", "其他"],
-    // Alternative labels
-    ["推荐", "推荐"],
-    ["个人主页", "个人主页"],
-  ];
+  for (const call of apiCalls) {
+    try {
+      const j = JSON.parse(call.body);
+      const data = j.data || j;
 
-  for (const [key, label] of sourcePatterns) {
-    if (sources[key] !== undefined) continue;
-    // Match: label followed by whitespace + number (with optional comma/decimals) + optional %
-    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const regex = new RegExp(`${escaped}\\s+([\\d,.]+)%?`);
-    const match = txt.match(regex);
-    if (match) {
-      sources[key] = parseFloat(match[1].replace(/,/g, ""));
-    }
+      if (data.data_list && Array.isArray(data.data_list) && data.data_list.length > 0) {
+        const url = new URL(call.url);
+        const typesStr = url.searchParams.get("stats_types") || "";
+        const types = typesStr ? typesStr.split(",").map(t => t.trim()) : [];
+
+        for (let ri = 0; ri < data.data_list.length && ri < types.length; ri++) {
+          const row = data.data_list[ri];
+          if (!Array.isArray(row)) continue;
+
+          // Map stats_type to source name via legend order correspondence
+          const label = legendNames && ri < legendNames.length
+            ? legendNames[ri]
+            : (TRAFFIC_METRIC_LABELS[types[ri]] || `指标${types[ri]}`);
+
+          // Use latest non-zero daily value (most recent day with data)
+          const nums = row.map(v => parseInt(v) || 0);
+          const latest = nums.reduce((last, v) => v > 0 ? v : last, 0);
+          if (latest > 0) sources[label] = latest;
+        }
+        continue;
+      }
+
+      // Generic fallback patterns for other API response shapes
+      if (Array.isArray(data)) {
+        for (const item of data) {
+          if (typeof item !== "object") continue;
+          const name = item.source_name || item.source || item.name || item.channel || item.origin || item.label;
+          const pct = parseFloat(item.ratio) || parseFloat(item.percentage) || parseFloat(item.percent)
+            || parseFloat(item.rate) || parseFloat(item.pct) || parseFloat(item.value) || parseFloat(item.share);
+          if (typeof name === "string" && !isNaN(pct)) sources[name] = parseFloat(pct.toFixed(2));
+        }
+        continue;
+      }
+
+      const keys = Object.keys(data);
+      const allNumeric = keys.length > 1 && keys.every(k => {
+        const v = data[k];
+        return typeof v === "number" || (typeof v === "string" && !isNaN(parseFloat(v)));
+      });
+      if (allNumeric && keys.some(k => /书城|搜索|分类|书架|推荐|继续阅读/.test(k))) {
+        for (const k of keys) {
+          const v = typeof data[k] === "string" ? parseFloat(data[k]) : data[k];
+          if (!isNaN(v)) sources[k] = parseFloat(v.toFixed(2));
+        }
+        continue;
+      }
+
+      for (const k of keys) {
+        const arr = data[k];
+        if (!Array.isArray(arr)) continue;
+        for (const item of arr) {
+          if (typeof item !== "object") continue;
+          const name = item.source_name || item.source || item.name || item.channel || item.origin || item.label;
+          let pct;
+          const pctRaw = item.ratio ?? item.percentage ?? item.percent ?? item.rate ?? item.pct ?? item.share ?? item.value;
+          if (typeof pctRaw === "string") pct = parseFloat(pctRaw.replace("%", ""));
+          else if (typeof pctRaw === "number") pct = pctRaw;
+          if (typeof name === "string" && !isNaN(pct) && pct > 0) sources[name] = parseFloat(pct.toFixed(2));
+        }
+      }
+    } catch (e) { console.warn("流量API响应解析失败", e.message); }
   }
 
-  // Also try to extract traffic data from chart/tooltip text format
-  // e.g. "书城流量 1234 占比 56.7%"
-  const pctPattern = /(\S+?)\s*[:：]?\s*([\d,.]+)%/g;
-  let pctMatch;
-  while ((pctMatch = pctPattern.exec(txt)) !== null) {
-    const name = pctMatch[1].trim();
-    if (name.length <= 8 && !sources[name]) {
-      sources[name] = parseFloat(pctMatch[2].replace(/,/g, ""));
-    }
-  }
+  const isEmpty = Object.keys(sources).length === 0;
+  return { sources, isEmpty };
+}
 
-  // If no sources parsed, mark empty — but log text sample for debugging
-  if (Object.keys(sources).length === 0) {
-    if (txt.includes("暂无数据") || txt.includes("无数据")) {
-      sources._empty = true;
-    } else {
-      // Has text but our parsers didn't match — log a snippet for debugging
-      const sample = txt.substring(0, 300).replace(/\n/g, " | ");
-      console.log(`   │  流量原始文本: ${sample}`);
-      sources._empty = true;
+/**
+ * Extract ECharts legend names from the traffic page DOM.
+ * These names correspond 1:1 (in order) to the stats_types in the
+ * book_increase_v2 API URL. ECharts renders legend items as HTML
+ * elements with class "control-legend-item-name".
+ */
+async function collectTrafficFromPage(page) {
+  try {
+    const legendNames = await page.evaluate(() => {
+      const items = document.querySelectorAll(".control-legend-item-name");
+      return Array.from(items).map(el => el.textContent.trim());
+    });
+    if (legendNames.length > 0) {
+      return { legendNames, isEmpty: false };
     }
+  } catch (e) {
+    console.warn(`   │  图例提取异常: ${e.message}`);
   }
-
-  return { sources };
+  return null;
 }
 
 async function collectRevenue(page) {
@@ -857,7 +1221,8 @@ async function doCollect(opts = {}) {
 
     // 检查登录态
     if (page.url().includes("login") || page.url().includes("passport")) {
-      console.error("❌ Edge 登录态已过期，请在 Edge 中重新登录番茄小说后重试");
+      const loginBrowserName = BROWSER_REGISTRY[config.browser]?.name || "浏览器";
+      console.error(`❌ ${loginBrowserName} 登录态已过期，请在 ${loginBrowserName} 中重新登录番茄小说后重试`);
       await browser.close();
       process.exit(1);
     }
@@ -865,7 +1230,7 @@ async function doCollect(opts = {}) {
     // 等待 SPA 渲染
     try {
       await page.waitForSelector('[class*="nav-item"], [class*="sidebar"], [class*="menu-item"]', { timeout: 15000 });
-    } catch {}
+    } catch (e) { console.warn("SPA渲染等待超时", e.message); }
     await page.waitForTimeout(1000);
     const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 500) || "");
     if (bodyText.includes("请登录") || bodyText.includes("验证码") || bodyText.length < 50) {
@@ -881,9 +1246,39 @@ async function doCollect(opts = {}) {
     await page.waitForTimeout(2500);
     const dataPageUrl = page.url();
 
-    // 3. Collect Dashboard — enumerate ALL books from drawer
-    console.log("📋 采集: 作品列表...");
-    const dashboard = await collectDashboard(page);
+    // 3. Collect Dashboard — only open drawer when necessary
+    // Read current book from sidebar (fast, no DOM mutation)
+    const currentBook = await page.evaluate(() => {
+      const el = document.querySelector(".book-select-info-title");
+      return el?.textContent?.trim() || "";
+    });
+
+    let dashboard;
+    if (opts.allBooks) {
+      // --all mode: need full book list from drawer
+      console.log("📋 采集: 作品列表...");
+      dashboard = await collectDashboard(page);
+    } else if (opts.book) {
+      // --book mode: check if target matches current book (skip drawer if so)
+      const targetNames = opts.book.split(",").map(s => s.trim());
+      if (targetNames.length === 1 && currentBook &&
+          (currentBook.includes(targetNames[0]) || targetNames[0].includes(currentBook))) {
+        console.log(`   当前作品: ${currentBook}（目标匹配，跳过抽屉枚举）`);
+        dashboard = { novels: [{ name: currentBook, status: "" }] };
+      } else {
+        console.log("📋 采集: 作品列表...");
+        dashboard = await collectDashboard(page);
+      }
+    } else {
+      // Default mode: current book only, skip drawer entirely
+      if (currentBook) {
+        console.log(`   当前作品: ${currentBook}（跳过抽屉枚举）`);
+        dashboard = { novels: [{ name: currentBook, status: "" }] };
+      } else {
+        console.log("📋 采集: 作品列表...");
+        dashboard = await collectDashboard(page);
+      }
+    }
 
     // Determine target books
     let targetBooks = dashboard.novels || [];
@@ -912,9 +1307,9 @@ async function doCollect(opts = {}) {
       const book = targetBooks[bi];
       const bookSafeName = book.name.replace(/[<>:"/\\|?*]/g, "_").trim();
 
-      // Check if already collected today (skip re-collection)
+      // Check if already collected today (skip re-collection unless --force)
       const summaryPath = path.join(baseDayDir, bookSafeName, "summary.json");
-      if (fs.existsSync(summaryPath)) {
+      if (!opts.force && fs.existsSync(summaryPath)) {
         const existing = JSON.parse(fs.readFileSync(summaryPath, "utf-8"));
         if (existing.date === date && existing.collectedAt) {
           console.log(`\n📖 [${bi + 1}/${targetBooks.length}] ${book.name} (今日已采集，跳过)`);
@@ -926,7 +1321,7 @@ async function doCollect(opts = {}) {
       console.log(`\n📖 [${bi + 1}/${targetBooks.length}] ${book.name}`);
       const switched = await switchToBook(page, book.name, dataPageUrl);
       if (!switched) {
-        console.log(`   ⚠ 跳过 "${book.name}"（切换失败）`);
+        console.warn(`   ⚠ 跳过 "${book.name}"（切换失败）`);
         continue;
       }
 
@@ -941,34 +1336,145 @@ async function doCollect(opts = {}) {
       try { results.worksData = await collectWorksData(page); }
       catch (e) { console.error(`   │  ✗ 作品数据采集失败: ${e.message}`); }
 
-      // 3b. 质量分析
+      // 3b. 质量分析 — intercept API responses + explicit API call
       console.log("   ├─ 质量分析...");
       try {
-        await jsClick(page, "质量分析");
-        await page.waitForTimeout(2000);
-        results.quality = await collectQuality(page);
+        // Set up response capture BEFORE clicking the tab
+        const qualityApiCalls = [];
+        const onResponse = async (response) => {
+          const url = response.url();
+          if (url.includes("fanqienovel.com") && /api|data|quality|chapter/i.test(url)) {
+            try {
+              const ct = response.headers()["content-type"] || "";
+              if (ct.includes("json")) {
+                const body = await response.text();
+                qualityApiCalls.push({ url, body, status: response.status() });
+              }
+            } catch (e) {
+              console.warn("质量API响应读取失败", e.message);
+            }
+          }
+        };
+        page.on("response", onResponse);
+        try {
+          await jsClick(page, "质量分析");
+          await page.waitForTimeout(3000);
+        } finally {
+          page.removeListener("response", onResponse);
+        }
+
+        // Extract book_id from captured API calls (page URL may not have it)
+        let bookId = null;
+        if (qualityApiCalls.length > 0) {
+          try { bookId = new URL(qualityApiCalls[0].url).searchParams.get("book_id"); } catch (e) { console.warn("bookId提取失败", e.message); }
+        }
+
+        // Fetch additional stats_types for complete chart data:
+        //   stats_type=3 → loss_rate (流失率, only if page didn't auto-fetch it)
+        //   stats_type=4 → follow_read_rate with real values (章节跟读率 chart)
+        // stats_type mapping verified by runtime probe:
+        //   1,8,9,10 → follow_read_rate all 0 (useless)
+        //   3 → +loss_rate   4 → real follow_read_rate   5→reminder   6→paragraph   7→chapter
+        if (bookId && qualityApiCalls.length > 0) {
+          try {
+            const firstUrl = new URL(qualityApiCalls[0].url);
+            const fetches = [];
+
+            const hasLossRate = qualityApiCalls.some(call => {
+              try { const j = JSON.parse(call.body); return j.data?.chapter_stats_list?.some?.(ch => ch.loss_rate !== undefined); }
+              catch { return false; }
+            });
+            if (!hasLossRate) fetches.push("3");
+
+            // Always fetch stats_type=4 for real follow_read_rate
+            fetches.push("4");
+
+            for (const st of fetches) {
+              const u = new URL(firstUrl.origin + firstUrl.pathname);
+              for (const [k, v] of firstUrl.searchParams) {
+                u.searchParams.set(k, k === "stats_type" ? st : v);
+              }
+              if (!u.searchParams.has("stats_type")) u.searchParams.set("stats_type", st);
+              u.searchParams.set("page_count", "500");
+              u.searchParams.set("count", "500");
+              const body = await page.evaluate(async (url) => {
+                const res = await fetch(url, { credentials: "include" });
+                return await res.text();
+              }, u.toString());
+              qualityApiCalls.push({ url: u.toString(), body, status: 200 });
+            }
+          } catch (e) {
+            console.warn(`   │  补充 stats_type 请求失败: ${e.message}`);
+          }
+        }
+
+        results.quality = await collectQuality(page, qualityApiCalls);
       } catch (e) { console.error(`   │  ✗ 质量分析采集失败: ${e.message}`); }
 
-      // 3c. 流量构成
+      // 3c. 流量构成 — intercept API calls (data is on ECharts canvas, not in DOM text)
       console.log("   ├─ 流量构成...");
       try {
-        await jsClick(page, "流量构成");
-        await page.waitForTimeout(2000);
-        results.traffic = await collectTraffic(page);
+        const trafficApiCalls = [];
+        const onTrafficResponse = async (response) => {
+          const url = response.url();
+          // Capture ALL fanqienovel.com JSON API responses — we don't know the exact
+          // traffic endpoint, so cast a wide net and let collectTrafficFromApi filter
+          if (url.includes("fanqienovel.com")) {
+            try {
+              const ct = response.headers()["content-type"] || "";
+              if (ct.includes("json")) {
+                const body = await response.text();
+                trafficApiCalls.push({ url, body, status: response.status() });
+                console.log(`   │  流量API: ${url.replace(/https?:\/\/[^/]+/, "").replace(/msToken=[^&]+/, "msToken=...").replace(/a_bogus=[^&]+/, "a_bogus=...")}`);
+              }
+            } catch (e) { console.warn("流量响应读取失败", e.message); }
+          }
+        };
+        page.on("response", onTrafficResponse);
+        try {
+          await jsClick(page, "流量构成");
+          await page.waitForTimeout(3000);
+        } finally {
+          page.removeListener("response", onTrafficResponse);
+        }
+
+        // Phase 1: Extract legend names from DOM (书城/分类/书架/...)
+        // These names correspond 1:1 in order to stats_types in the API URL
+        let legendNames = null;
+        const fromPage = await collectTrafficFromPage(page);
+        if (fromPage && fromPage.legendNames) {
+          legendNames = fromPage.legendNames;
+        }
+
+        // Phase 2: Parse API response with legend name mapping
+        // Each stats_type row maps to the legend name at the same index
+        if (trafficApiCalls.length > 0) {
+          results.traffic = collectTrafficFromApi(trafficApiCalls, legendNames);
+        } else {
+          results.traffic = { sources: {}, isEmpty: true };
+        }
       } catch (e) { console.error(`   │  ✗ 流量构成采集失败: ${e.message}`); }
 
-      // 4. Revenue
+      // 4. Revenue — profit page uses MODAL book selector, NOT drawer
       console.log("   ├─ 收益数据...");
       let revenue30 = null;
       try {
-        await jsClick(page, "收益分析");
-        await page.waitForTimeout(800);
+        // "小说收益" sidebar link navigates to /main/writer/profit
         await jsClick(page, "小说收益");
         await page.waitForTimeout(2500);
-        results.revenue = await collectRevenue(page);
-        if (await jsClick(page, "30天")) {
-          await page.waitForTimeout(2000);
-          revenue30 = await collectRevenue(page);
+        // Switch to correct book on profit page (uses modal, not drawer)
+        const profitSwitched = await switchBookOnProfitPage(page, book.name);
+        if (profitSwitched) {
+          // Re-select "每日收益" tab (modal refresh may reset to default)
+          await jsClick(page, "每日收益");
+          await page.waitForTimeout(1000);
+          results.revenue = await collectRevenue(page);
+          if (await jsClick(page, "30天")) {
+            await page.waitForTimeout(2000);
+            revenue30 = await collectRevenue(page);
+          }
+        } else {
+          console.warn(`   │  ⚠ 收益页切换 "${book.name}" 失败，跳过`);
         }
       } catch (e) { console.error(`   │  ✗ 收益数据采集失败: ${e.message}`); }
 
@@ -1010,7 +1516,7 @@ async function doCollect(opts = {}) {
       const logPath = path.join(DATA_DIR, "daily-log.json");
       let log = [];
       if (fs.existsSync(logPath)) {
-        try { log = JSON.parse(fs.readFileSync(logPath, "utf-8")); } catch {}
+        try { log = JSON.parse(fs.readFileSync(logPath, "utf-8")); } catch (e) { console.warn("daily-log解析失败", e.message); }
       }
       const existingIdx = log.findIndex(d => d.date === date && d.book === book.name);
       if (existingIdx >= 0) {
@@ -1049,15 +1555,19 @@ async function doCollect(opts = {}) {
     console.log(`📂 数据目录: ${baseDayDir}`);
     console.log("========================================");
 
+    // 关闭采集页面（但不关闭浏览器），浏览器保持运行
+    // 下次 collect 直接 CDP 重连，无需重新登录
+    await page.close().catch(() => {});
+    const browserName = BROWSER_REGISTRY[config.browser]?.name || "浏览器";
+    console.log(`\n📄 采集完成（${browserName} 保持运行，下次免登重连）`);
+
   } catch (e) {
     console.error("\n❌ 采集出错:", e.message);
-    // Save error screenshot
     const errPath = path.join(baseDayDir, "error.png");
     await page.screenshot({ path: errPath, fullPage: true }).catch(() => {});
     console.error(`   错误截图: ${errPath}`);
-  } finally {
     await browser.close();
-    console.log("\n📄 采集页面已关闭");
+    console.error("\n📄 浏览器已关闭（出错保护）");
   }
 }
 
@@ -1146,18 +1656,18 @@ function findQualityPath(entry) {
 function doReport() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
   if (!fs.existsSync(logPath)) {
-    console.log("❌ 暂无数据，请先运行 collect");
+    console.error("❌ 暂无数据，请先运行 collect");
     process.exit(1);
   }
 
   const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
   if (raw.length === 0) {
-    console.log("❌ 数据为空");
+    console.error("❌ 数据为空");
     process.exit(1);
   }
 
   const { entries: log, book } = resolveBook(raw, opts.book);
-  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
+  if (!log.length) { console.error("❌ 未找到该书数据"); process.exit(1); }
   const bookList = getBookName(raw);
 
   console.log("📊 番茄小说数据趋势报告");
@@ -1300,8 +1810,8 @@ function predictFuture(values, days) {
     // Blend: trend line × confidence + recent average × (1 - confidence)
     const blended = trendVal * trendWeight + recentAvg * (1 - trendWeight);
     // Three scenarios
-    const optimistic = trendVal * (1 + 0.15 * (i / days)) + recentAvg * 0.1;
-    const conservative = trendVal * (1 - 0.2) * 0.8;
+    const optimistic = trendVal * (1 + 0.15 * (i / days));
+    const conservative = trendVal * 0.8 + recentAvg * 0.2;
     predictions.push({
       day: i,
       conservative: Math.max(0, conservative),
@@ -1314,11 +1824,11 @@ function predictFuture(values, days) {
 
 function doPredict() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
-  if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据"); process.exit(1); }
+  if (!fs.existsSync(logPath)) { console.error("❌ 暂无数据"); process.exit(1); }
 
   const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
   const { entries: log, book } = resolveBook(raw, opts.book);
-  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
+  if (!log.length) { console.error("❌ 未找到该书数据"); process.exit(1); }
   const latest = log[log.length - 1];
 
   // Use detailed daily revenue table if available (from 30-day tab)
@@ -1348,7 +1858,7 @@ function doPredict() {
 
   const predData = trimmedRevenue.length >= 3 ? trimmedRevenue : revenue;
   if (predData.length < 3) {
-    console.log("⚠️ 至少需要 3 天有收益数据才能预测\n");
+    console.warn("⚠️ 至少需要 3 天有收益数据才能预测\n");
     return;
   }
 
@@ -1377,15 +1887,9 @@ function doPredict() {
 
   // Milestone projections (only show reachable ones)
   console.log("\n── 收入里程碑预测 ──");
-  const milestones = [
-    { label: "月入 ¥100", target: 100 },
-    { label: "月入 ¥500", target: 500 },
-    { label: "月入 ¥1000", target: 1000 },
-    { label: "月入 ¥5000", target: 5000 },
-  ];
   const dailyAvg = predData.slice(-7).reduce((a, b) => a + b, 0) / Math.min(7, predData.length);
   let prevShown = true;
-  for (const m of milestones) {
+  for (const m of REVENUE_MILESTONES) {
     if (!prevShown) break;
     if (dailyAvg > 0) {
       const daysNeeded = Math.round(m.target / dailyAvg);
@@ -1414,11 +1918,11 @@ function doPredict() {
 
 function doChapters() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
-  if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据，请先运行 collect"); process.exit(1); }
+  if (!fs.existsSync(logPath)) { console.error("❌ 暂无数据，请先运行 collect"); process.exit(1); }
 
   const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
   const { entries: log, book } = resolveBook(raw, opts.book);
-  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
+  if (!log.length) { console.error("❌ 未找到该书数据"); process.exit(1); }
   const latest = log[log.length - 1];
 
   // Load chapter list from the latest day's quality.json (multi-book + legacy fallback)
@@ -1434,7 +1938,7 @@ function doChapters() {
   if (book) console.log(`📖 作品: ${book}`);
 
   if (chapterList.length === 0) {
-    console.log("⚠️ 暂无章节数据，请先运行 collect 采集质量分析数据\n");
+    console.warn("⚠️ 暂无章节数据，请先运行 collect 采集质量分析数据\n");
     return;
   }
 
@@ -1467,7 +1971,7 @@ function doChapters() {
   let chapters = [];
   if (qualityPath) {
     const quality = JSON.parse(fs.readFileSync(qualityPath, "utf-8"));
-    chapters = quality.chapterList || [];
+    chapters = quality.chapters || [];
   }
 
   // Check for chapters with low completion rates
@@ -1476,9 +1980,35 @@ function doChapters() {
     const avgRate = rates.length > 0 ? rates.reduce((a, b) => a + b, 0) / rates.length : 0;
 
     for (const ch of chapters) {
-      if (ch.completionRate > 0 && ch.completionRate < avgRate * 0.5) {
+      if (ch.completionRate > 0 && ch.completionRate < avgRate * 0.3) {
         console.log(`  🚨 第${ch.chapter}章 "${ch.title}" 读完率 ${ch.completionRate}% (远低于平均 ${avgRate.toFixed(1)}%)`);
         console.log(`     → 建议：检查该章内容是否存在节奏拖沓、信息密度低等问题`);
+      }
+    }
+
+    // Follow-read rate analysis (跟读率) — tracks reader retention across chapters
+    const followRates = chapters.map(c => c.followReadRate).filter(r => r > 0);
+    if (followRates.length > 0) {
+      const avgFollow = followRates.reduce((a, b) => a + b, 0) / followRates.length;
+      console.log(`\n  📖 平均跟读率: ${avgFollow.toFixed(1)}% | 平均读完率: ${avgRate.toFixed(1)}%`);
+
+      // Flag chapters where follow rate drops sharply (readers quit after this chapter)
+      for (const ch of chapters) {
+        if (ch.followReadRate > 0 && ch.followReadRate < avgFollow * 0.3) {
+          console.log(`  🔴 第${ch.chapter}章 "${ch.title}" 跟读率暴跌至 ${ch.followReadRate}% (平均 ${avgFollow.toFixed(1)}%)`);
+          console.log(`     → 建议：此章可能是读者流失关键节点，检查情节转折/节奏问题`);
+        }
+      }
+    }
+
+    // Loss rate analysis (流失率) — inverse of completion rate (from stats_type=3)
+    const lossRates = chapters.map(c => c.lossRate).filter(r => r > 0);
+    if (lossRates.length > 0) {
+      const avgLoss = lossRates.reduce((a, b) => a + b, 0) / lossRates.length;
+      const highLoss = chapters.filter(c => c.lossRate > avgLoss * 1.5);
+      if (highLoss.length > 0) {
+        const worst = highLoss.sort((a, b) => b.lossRate - a.lossRate)[0];
+        console.warn(`  ⚠ 最高流失率: 第${worst.chapter}章 "${worst.title}" 流失率 ${worst.lossRate}% (平均 ${avgLoss.toFixed(1)}%)`);
       }
     }
   }
@@ -1489,7 +2019,7 @@ function doChapters() {
     const avgRecent = recentWordCounts.reduce((a, b) => a + b, 0) / recentWordCounts.length;
     for (const ch of recentChapters) {
       if (ch.wordCount < avgRecent * 0.6 && ch.wordCount > 0) {
-        console.log(`  ⚠ 第${ch.chapter}章 字数 ${ch.wordCount} (低于近期平均 ${Math.round(avgRecent)})`);
+        console.warn(`  ⚠ 第${ch.chapter}章 字数 ${ch.wordCount} (低于近期平均 ${Math.round(avgRecent)})`);
         console.log(`     → 建议：章节过短可能影响读者追读意愿`);
       }
     }
@@ -1498,7 +2028,7 @@ function doChapters() {
   // Check for chapters with zero interaction (possible reader dropout point)
   const zeroInteraction = recentChapters.filter(c => c.comments === 0 && c.urges === 0 && c.paragraphComments === 0);
   if (zeroInteraction.length >= 3) {
-    console.log(`  ⚠ 连续 ${zeroInteraction.length} 章零互动，读者参与度下降`);
+    console.warn(`  ⚠ 连续 ${zeroInteraction.length} 章零互动，读者参与度下降`);
     console.log(`     → 建议：考虑在章节末尾增加互动引导（提问/投票/彩蛋）`);
   }
 
@@ -1554,11 +2084,11 @@ function doChapters() {
 
 function doMetrics() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
-  if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据"); process.exit(1); }
+  if (!fs.existsSync(logPath)) { console.error("❌ 暂无数据"); process.exit(1); }
 
   const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
   const { entries: log, book } = resolveBook(raw, opts.book);
-  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
+  if (!log.length) { console.error("❌ 未找到该书数据"); process.exit(1); }
   const latest = log[log.length - 1];
 
   console.log("📐 作者核心指标分析");
@@ -1574,7 +2104,7 @@ function doMetrics() {
       const quality = JSON.parse(fs.readFileSync(qualityPath, "utf-8"));
       chapterList = quality.chapterList || [];
       totalWords = chapterList.reduce((s, c) => s + (c.wordCount || 0), 0);
-    } catch {}
+    } catch { console.warn(`⚠ 质量数据文件读取异常: ${qualityPath}`); }
   }
 
   // ── 1. 每千字收益 ──
@@ -1593,7 +2123,7 @@ function doMetrics() {
       console.log(`  → 千字收益不错，继续保持内容质量`);
     }
   } else {
-    console.log("  ⚠ 暂无字数数据");
+    console.warn("  ⚠ 暂无字数数据");
   }
 
   // ── 2. 全勤奖达标进度 ──
@@ -1636,7 +2166,7 @@ function doMetrics() {
       if (daysInMonth - dayOfMonth <= 3 && daysInMonth - dayOfMonth > 0) {
         console.log(`  🚨 距月底还有 ${daysInMonth - dayOfMonth} 天！务必保持每日更新以免断全勤！`);
       } else if (!updatedToday) {
-        console.log(`  ⚠ 今日尚未更新，请尽快发布章节`);
+        console.warn(`  ⚠ 今日尚未更新，请尽快发布章节`);
       }
 
       // Estimated monthly update count
@@ -1644,7 +2174,7 @@ function doMetrics() {
       const monthUpdates = uniqueDates.filter(d => d >= monthStart).length;
       console.log(`  本月已更新: ${monthUpdates} 天`);
     } else {
-      console.log("  ⚠ 更新数据不足，需要更多章节数据");
+      console.warn("  ⚠ 更新数据不足，需要更多章节数据");
     }
   }
 
@@ -1663,14 +2193,7 @@ function doMetrics() {
   const revPerReader = readers > 0 ? dailyRev / readers : 0;
   console.log(`  单读者日均价值: ¥${revPerReader.toFixed(4)}`);
 
-  const goals = [
-    { label: "月入 ¥100", target: 100, icon: "🌱" },
-    { label: "月入 ¥500", target: 500, icon: "🌿" },
-    { label: "月入 ¥1000", target: 1000, icon: "🌳" },
-    { label: "月入 ¥5000", target: 5000, icon: "🏆" },
-  ];
-
-  for (const g of goals) {
+  for (const g of REVENUE_MILESTONES) {
     const neededDaily = g.target / 30;
     if (dailyRevAvg > 0) {
       const multiplier = neededDaily / dailyRevAvg;
@@ -1799,7 +2322,7 @@ function generateReport(log, period, label) {
   } else if (readerChange > 0) {
     console.log("  ✅ 数据稳步增长，建议保持日更不低于 4000 字");
   } else if (readerChange < 0) {
-    console.log("  ⚠ 阅读量下滑，建议：");
+    console.warn("  ⚠ 阅读量下滑，建议：");
     console.log("     1. 检查最近章节的读完率，定位流失节点");
     console.log("     2. 观察竞品同类型作品的数据变化");
     console.log("     3. 考虑优化简介、封面、前3章开头");
@@ -1809,11 +2332,11 @@ function generateReport(log, period, label) {
   if (bookmarks[bookmarks.length - 1] > readers[readers.length - 1] * 0.1) {
     console.log("  ✅ 加书架转化率较好，内容吸引力强");
   } else if (readers[readers.length - 1] > 0) {
-    console.log("  ⚠ 加书架率偏低，建议在章节首尾增加书架引导");
+    console.warn("  ⚠ 加书架率偏低，建议在章节首尾增加书架引导");
   }
 
   if (log.length >= 3 && revenue[revenue.length - 1] <= 0 && readers[readers.length - 1] > 50) {
-    console.log("  ⚠ 有流量无收益？可能原因：验证期/推荐验证中，收益次日更新");
+    console.warn("  ⚠ 有流量无收益？可能原因：验证期/推荐验证中，收益次日更新");
   }
 
   // Prediction
@@ -1833,11 +2356,11 @@ function generateReport(log, period, label) {
         if (cls.length > 0) {
           avgWords = Math.round(cls.reduce((s, c) => s + (c.wordCount || 0), 0) / cls.length);
         }
-      } catch {}
+      } catch (e) { console.warn("质量数据读取失败，使用默认值", e.message); }
     }
     console.log(`  当前平均章节: ${avgWords.toLocaleString()} 字`);
     if (avgWords < 2000) {
-      console.log("  ⚠ 章节字数偏低，建议提升至 3000-5000 字提升完读率");
+      console.warn("  ⚠ 章节字数偏低，建议提升至 3000-5000 字提升完读率");
     } else if (avgWords >= 4000) {
       console.log("  ✅ 章节字数合理，保持节奏");
     } else {
@@ -1850,20 +2373,20 @@ function generateReport(log, period, label) {
 
 function doWeekly() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
-  if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据"); process.exit(1); }
+  if (!fs.existsSync(logPath)) { console.error("❌ 暂无数据"); process.exit(1); }
   const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
   const { entries: log } = resolveBook(raw, opts.book);
-  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
+  if (!log.length) { console.error("❌ 未找到该书数据"); process.exit(1); }
   const weekData = log.slice(-7);
   generateReport(weekData, "weekly", "📅 周报 (近7天)");
 }
 
 function doMonthly() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
-  if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据"); process.exit(1); }
+  if (!fs.existsSync(logPath)) { console.error("❌ 暂无数据"); process.exit(1); }
   const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
   const { entries: log } = resolveBook(raw, opts.book);
-  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
+  if (!log.length) { console.error("❌ 未找到该书数据"); process.exit(1); }
   const monthData = log.slice(-30);
   generateReport(monthData, "monthly", "📅 月报 (近30天)");
 }
@@ -1878,10 +2401,10 @@ function htmlEscape(s) {
 
 function doHtml() {
   const logPath = path.join(DATA_DIR, "daily-log.json");
-  if (!fs.existsSync(logPath)) { console.log("❌ 暂无数据"); process.exit(1); }
+  if (!fs.existsSync(logPath)) { console.error("❌ 暂无数据"); process.exit(1); }
   const raw = JSON.parse(fs.readFileSync(logPath, "utf-8"));
   const { entries: log, book } = resolveBook(raw, opts.book);
-  if (!log.length) { console.log("❌ 未找到该书数据"); process.exit(1); }
+  if (!log.length) { console.error("❌ 未找到该书数据"); process.exit(1); }
   const latest = log[log.length - 1];
 
   const revenue = log.map(d => getNested(d, "revenue.overview.yesterdayRevenue") || 0);
@@ -1926,7 +2449,7 @@ function doHtml() {
       avgChapWords = cls.length > 0 ? Math.round(totalWords / cls.length) : 0;
       const totalRev = getNested(latest, "revenue.overview.totalRevenue") || 0;
       if (totalWords > 0) perKWords = totalRev / (totalWords / 1000);
-    } catch {}
+    } catch { console.warn(`⚠ 质量数据读取异常: ${_htmlQualityPath}`); }
   }
 
   // Chapter anomalies
@@ -1946,7 +2469,7 @@ function doHtml() {
           anomalies.push({ type: "warning", msg: `第${ch.chapter}章字数 ${ch.wordCount}，低于近期平均 ${Math.round(avgRecent)}` });
         }
       }
-    } catch {}
+    } catch (e) { console.warn("异常检测失败", e.message); }
   }
 
   // Follow rate (追读率 = 追更人数 / 阅读人数)
@@ -2337,52 +2860,98 @@ ${anomalies.length > 0 ? `
 
 // ── Setup ──────────────────────────────────────────────────────────
 
-function doSetup() {
+async function doSetup() {
   console.log("🔧 番茄数据分析工具 - 首次配置\n");
   console.log("========================================\n");
 
-  const defaultConfig = {
-    edgeProfile: "",   // 留空 = 使用独立浏览器配置，避免和日常Edge冲突
-    headless: false,
-    playwrightPath: "playwright",
-    books: [],
-  };
+  // Auto-detect installed browsers
+  const available = [];
+  for (const [key, info] of Object.entries(BROWSER_REGISTRY)) {
+    if (findBrowserExe(key, null)) {
+      available.push({ key, name: info.name });
+    }
+  }
+  // Default to first available, fallback to edge (even if not found — user may install later)
+  const defaultBrowser = available.length > 0 ? available[0].key : "edge";
 
   // Auto-detect playwright from common locations
-  const candidates = [];
-  // Local node_modules
-  candidates.push(path.join(__dirname, "node_modules", "playwright"));
-  // Global npm (cross-platform)
+  const playwrightCandidates = [];
+  playwrightCandidates.push(path.join(__dirname, "node_modules", "playwright"));
   if (process.env.APPDATA) {
-    candidates.push(path.join(process.env.APPDATA, "npm", "node_modules", "playwright"));
-    candidates.push(path.join(process.env.APPDATA, "npm", "node_modules", "@playwright", "mcp", "node_modules", "playwright"));
+    playwrightCandidates.push(path.join(process.env.APPDATA, "npm", "node_modules", "playwright"));
+    playwrightCandidates.push(path.join(process.env.APPDATA, "npm", "node_modules", "@playwright", "mcp", "node_modules", "playwright"));
   }
   if (process.env.NPM_CONFIG_PREFIX) {
-    candidates.push(path.join(process.env.NPM_CONFIG_PREFIX, "node_modules", "playwright"));
+    playwrightCandidates.push(path.join(process.env.NPM_CONFIG_PREFIX, "node_modules", "playwright"));
   }
-  for (const c of candidates) {
+  let playwrightPath = "playwright";
+  for (const c of playwrightCandidates) {
     if (fs.existsSync(path.join(c, "index.js")) || fs.existsSync(path.join(c, "index.mjs"))) {
-      defaultConfig.playwrightPath = c;
+      playwrightPath = c;
       break;
     }
   }
 
-  if (!fs.existsSync(CONFIG_PATH)) {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(defaultConfig, null, 2), "utf-8");
-    console.log("✅ 已创建 config.json");
-    console.log("\n配置说明:");
-    console.log("  edgeProfile   - 留空=独立浏览器（推荐，和系统Edge互不冲突）");
-    console.log("  headless      - true=后台运行 false=显示浏览器窗口");
-    console.log("  playwrightPath- Playwright 模块路径（留空自动检测）");
-    console.log("  books         - 要采集的书名列表（空=全部）");
-  } else {
-    console.log("⚠️  config.json 已存在");
+  if (fs.existsSync(CONFIG_PATH)) {
+    console.warn("⚠️  config.json 已存在");
+    const existing = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+    if (!existing.browser) {
+      existing.browser = defaultBrowser;
+      fs.writeFileSync(CONFIG_PATH, JSON.stringify(existing, null, 2), "utf-8");
+      console.log(`   已自动添加 browser 字段: "${defaultBrowser}" (${BROWSER_REGISTRY[defaultBrowser]?.name})`);
+    }
+    console.log("\n下一步: node fanqie-analytics.js collect");
+    return;
   }
+
+  // Interactive browser selection
+  const readline = require("readline");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  function ask(question) {
+    return new Promise(resolve => rl.question(question, resolve));
+  }
+
+  console.log("检测到以下已安装的浏览器:");
+  for (let i = 0; i < available.length; i++) {
+    const marker = available[i].key === defaultBrowser ? " ★ 默认" : "";
+    console.log(`  ${i + 1}. ${available[i].name}${marker}`);
+  }
+  console.log(`  ${available.length + 1}. 自定义路径`);
+  console.log("");
+
+  let browser = defaultBrowser;
+  let browserPath = "";
+
+  const answer = await ask(`选择浏览器 [1-${available.length + 1}] (回车=默认): `);
+  const idx = parseInt(answer) - 1;
+
+  if (idx >= 0 && idx < available.length) {
+    browser = available[idx].key;
+  } else if (idx === available.length) {
+    browserPath = await ask("请输入浏览器 exe 完整路径: ");
+    browser = "edge"; // fallback registry entry for process name, etc.
+  }
+
+  const config = {
+    browser,
+    browserPath,
+    edgeProfile: "",
+    headless: false,
+    playwrightPath,
+    books: [],
+  };
+
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
+  console.log(`\n✅ 已创建 config.json (浏览器: ${BROWSER_REGISTRY[browser]?.name || browserPath})`);
 
   console.log("\n下一步:");
   console.log("  1. 运行: node fanqie-analytics.js collect");
-  console.log("  2. 首次运行弹出独立浏览器窗口，登录 fanqienovel.com");
-  console.log("  3. 登录后自动采集，后续免登，且不干扰日常 Edge 使用");
+  console.log("  2. 首次运行自动打开浏览器窗口，登录 fanqienovel.com（仅需一次）");
+  console.log("  3. 采集完成后浏览器保持运行，下次 collect 秒级重连免登");
+  console.log("  4. 即使重启电脑，浏览器的 User Data 目录也会保留登录态");
+
+  rl.close();
 }
 
 // ── CLI ─────────────────────────────────────────────────────────────
@@ -2398,12 +2967,13 @@ const opts = {
   headless: process.argv.includes("--headless"),
   book: parseArg("--book"),
   allBooks: process.argv.includes("--all"),
+  force: process.argv.includes("--force"),
 };
 
 (async () => {
   switch (command) {
     case "setup":
-      doSetup();
+      await doSetup();
       break;
     case "collect":
       await doCollect(opts);
@@ -2434,6 +3004,10 @@ const opts = {
       console.log("");
       console.log("数据采集:");
       console.log("  collect    采集今日全部数据（自动打开浏览器）");
+      console.log("              --book <名称>  指定书名（逗号分隔多本）");
+      console.log("              --all          采集全部作品");
+      console.log("              --force        强制重新采集（跳过今日已采集检查）");
+      console.log("              --headless     无头模式");
       console.log("  setup      首次配置引导");
       console.log("");
       console.log("数据分析:");
@@ -2453,4 +3027,7 @@ const opts = {
       console.log("  --all        采集全部作品（仅 collect）");
       process.exit(1);
   }
-})();
+})().catch(err => {
+  console.error("❌ 未捕获异常:", err.message || err);
+  process.exit(1);
+});

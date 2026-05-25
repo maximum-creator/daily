@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>番茄小说数据分析 — 作者仪表盘</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;background:#f0f2f5;color:#1a1a2e;min-height:100vh}
+.header{background:linear-gradient(135deg,#1a1a2e 0%,#16213e 50%,#0f3460 100%);color:#fff;padding:24px 32px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:20px;font-weight:600;letter-spacing:1px}
+.header .badge{background:rgba(255,255,255,0.15);padding:6px 14px;border-radius:20px;font-size:13px}
+.container{max-width:1200px;margin:0 auto;padding:24px}
+/* Book Selector */
+.book-bar{background:#fff;border-radius:10px;padding:16px 20px;margin-bottom:20px;display:flex;align-items:center;gap:12px;box-shadow:0 1px 4px rgba(0,0,0,0.06)}
+.book-bar select{padding:8px 16px;border:1px solid #d0d5dd;border-radius:8px;font-size:15px;min-width:280px;background:#fff;cursor:pointer}
+.book-bar .refresh{background:#667eea;color:#fff;border:none;padding:8px 20px;border-radius:8px;font-size:14px;cursor:pointer}
+.book-bar .refresh:hover{background:#5a6fd6}
+.book-bar .stage-tag{display:inline-block;padding:4px 14px;border-radius:14px;font-size:13px;font-weight:600;margin-left:auto}
+.stage-verification{background:#fff3cd;color:#b45309}
+.stage-signed{background:#d4edda;color:#0d6e2d}
+.stage-finished{background:#d6eaf8;color:#1a5276}
+.stage-ongoing{background:#e8e8e8;color:#555}
+/* KPI Cards */
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:20px}
+.kpi-card{background:#fff;border-radius:10px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,0.06);text-align:center}
+.kpi-card .value{font-size:28px;font-weight:700;color:#1a1a2e}
+.kpi-card .label{font-size:13px;color:#888;margin-top:4px}
+.kpi-card .sub{font-size:12px;color:#aaa;margin-top:2px}
+.kpi-card.accent .value{color:#667eea}
+.kpi-card.warn .value{color:#e67e22}
+.kpi-card.danger .value{color:#e74c3c}
+.kpi-card.success .value{color:#27ae60}
+/* Two Column */
+.main-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px}
+.card{background:#fff;border-radius:10px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,0.06)}
+.card h2{font-size:16px;color:#1a1a2e;margin-bottom:16px;padding-bottom:10px;border-bottom:2px solid #667eea;display:flex;align-items:center;gap:8px}
+/* Traffic Bars */
+.traffic-bar{margin:8px 0;display:flex;align-items:center;gap:10px;font-size:14px}
+.traffic-bar .name{width:70px;text-align:right;flex-shrink:0;color:#555}
+.traffic-bar .num{width:45px;text-align:right;flex-shrink:0;font-weight:600}
+.traffic-bar .bar-track{flex:1;height:22px;background:#f0f0f0;border-radius:4px;overflow:hidden}
+.traffic-bar .bar-fill{height:100%;border-radius:4px;transition:width .5s}
+.bar-search{background:linear-gradient(90deg,#f5576c,#f093fb)}
+.bar-bookshelf{background:linear-gradient(90deg,#667eea,#764ba2)}
+.bar-store{background:linear-gradient(90deg,#11998e,#38ef7d)}
+.bar-category{background:linear-gradient(90deg,#f093fb,#f5576c)}
+.bar-other{background:linear-gradient(90deg,#bdc3c7,#95a5a6)}
+/* Quality Metrics */
+.metric-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f0f0f0;font-size:14px}
+.metric-row:last-child{border-bottom:none}
+.metric-row .m-label{color:#666}
+.metric-row .m-value{font-weight:600}
+.metric-row .m-trend{font-size:12px;margin-left:8px}
+.trend-down{color:#e74c3c}
+.trend-up{color:#27ae60}
+.trend-flat{color:#95a5a6}
+/* Suggestions */
+.suggestion{padding:12px 16px;border-radius:8px;margin:10px 0;font-size:13px;line-height:1.6;border-left:4px solid #ddd}
+.suggestion .s-title{font-weight:600;margin-bottom:4px;font-size:14px}
+.suggestion.priority-high{background:#ffeaea;border-left-color:#e74c3c}
+.suggestion.priority-high .s-title{color:#c0392b}
+.suggestion.priority-medium{background:#fef9e7;border-left-color:#f39c12}
+.suggestion.priority-medium .s-title{color:#b8730a}
+.suggestion.priority-info{background:#eaf2f8;border-left-color:#2980b9}
+.suggestion.priority-info .s-title{color:#1a5276}
+/* Anomalies */
+.anomaly-item{display:flex;align-items:center;padding:8px 12px;margin:4px 0;background:#fef9e7;border-radius:6px;font-size:13px;gap:12px}
+.anomaly-item .ch-num{font-weight:700;color:#b8730a;min-width:50px}
+.anomaly-item .ch-name{flex:1;color:#555}
+.anomaly-item .ch-badge{padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600}
+.badge-drop{background:#fce4e4;color:#c0392b}
+/* Full-width cards */
+.full-card{background:#fff;border-radius:10px;padding:20px;margin-bottom:20px;box-shadow:0 1px 4px rgba(0,0,0,0.06)}
+.full-card h2{font-size:16px;color:#1a1a2e;margin-bottom:16px;padding-bottom:10px;border-bottom:2px solid #667eea}
+/* Chapter retention arrow */
+.retention-flow{display:flex;align-items:center;gap:8px;font-size:14px;padding:15px 0}
+.retention-step{text-align:center}
+.retention-step .pct{font-weight:700;font-size:18px}
+.retention-step .zone{font-size:12px;color:#888}
+.retention-arrow{color:#bdc3c7;font-size:20px}
+/* Loading */
+.loading{text-align:center;padding:60px;color:#888;font-size:16px}
+.spinner{display:inline-block;width:30px;height:30px;border:3px solid #e0e0e0;border-top-color:#667eea;border-radius:50%;animation:spin .8s linear infinite;margin-bottom:10px}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* Footer */
+.footer{text-align:center;color:#aaa;font-size:12px;padding:20px}
+/* Empty state */
+.empty{text-align:center;padding:40px;color:#aaa;font-size:14px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>番茄小说 · 数据诊断</h1>
+    <div style="font-size:13px;opacity:0.7;margin-top:2px">AI 写作平台数据中间件 — 为作者提供专业级分析</div>
+  </div>
+  <div class="badge">API v1</div>
+</div>
+
+<div class="container">
+
+  <!-- Book Selector -->
+  <div class="book-bar" id="bookBar" style="display:none">
+    <span style="font-size:14px;color:#888">作品:</span>
+    <select id="bookSelect" onchange="loadAll()">
+      <option value="">全部作品</option>
+    </select>
+    <button class="refresh" onclick="loadAll()">刷新数据</button>
+    <span id="stageTag"></span>
+  </div>
+
+  <!-- Loading -->
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <div>正在加载分析数据…</div>
+  </div>
+
+  <!-- Content -->
+  <div id="content" style="display:none">
+
+    <!-- KPI Row -->
+    <div class="kpi-grid" id="kpiRow"></div>
+
+    <!-- Main Grid -->
+    <div class="main-grid">
+
+      <!-- Left: Traffic + Quality -->
+      <div>
+        <div class="card" id="trafficCard">
+          <h2>📊 流量来源分布</h2>
+          <div id="trafficBars"></div>
+          <div id="trafficEmpty" class="empty" style="display:none">暂无流量数据</div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h2>📝 作品质量指标</h2>
+          <div id="qualityMetrics"></div>
+        </div>
+      </div>
+
+      <!-- Right: Suggestions + Anomalies -->
+      <div>
+        <div class="card">
+          <h2>💡 智能诊断建议</h2>
+          <div id="suggestions"></div>
+          <div id="suggestionsEmpty" class="empty" style="display:none">暂无特殊建议，作品表现良好</div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <h2>⚠️ 章节异常检测</h2>
+          <div id="anomalies"></div>
+          <div id="anomaliesEmpty" class="empty" style="display:none">未检测到异常章节</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Retention Flow (full width) -->
+    <div class="full-card">
+      <h2>📈 读完率趋势（三段式）</h2>
+      <div id="retentionFlow"></div>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    番茄小说数据诊断 · 多租户 SaaS API · 对接即用
+  </div>
+</div>
+
+<script>
+const API = "/api/v1";
+const AUTH = "Bearer fa_sk_demo_001";
+
+async function api(path) {
+  const r = await fetch(API + path, { headers: { Authorization: AUTH } });
+  const j = await r.json();
+  return j.code === 0 ? j.data : null;
+}
+
+// Format number
+function fmt(n, dec) { return n == null ? "--" : Number(n).toFixed(dec || 0); }
+function pct(n) { return n == null ? "--" : Number(n).toFixed(1) + "%"; }
+function comma(n) { return n == null ? "--" : Number(n).toLocaleString(); }
+
+function trafficBarClass(name) {
+  if (name.includes("搜索")) return "bar-search";
+  if (name.includes("书架") || name.includes("继续阅读")) return "bar-bookshelf";
+  if (name.includes("书城")) return "bar-store";
+  if (name.includes("分类")) return "bar-category";
+  return "bar-other";
+}
+
+async function loadBooks() {
+  const data = await api("/books");
+  const sel = document.getElementById("bookSelect");
+  sel.innerHTML = '<option value="">全部作品</option>';
+  if (data && data.length > 0) {
+    data.forEach(b => {
+      sel.innerHTML += `<option value="${b.name}">${b.name}</option>`;
+    });
+    document.getElementById("bookBar").style.display = "flex";
+  }
+}
+
+async function loadAll() {
+  document.getElementById("loading").style.display = "block";
+  document.getElementById("content").style.display = "none";
+
+  const book = document.getElementById("bookSelect")?.value || "";
+  const q = book ? `?book=${encodeURIComponent(book)}` : "";
+
+  const [analysis, chapters, summary] = await Promise.all([
+    api(`/analysis${q}`),
+    api(`/chapters${q}`),
+    api(`/summary${q}`)
+  ]);
+
+  document.getElementById("loading").style.display = "none";
+  document.getElementById("content").style.display = "block";
+
+  if (!analysis) {
+    document.getElementById("content").innerHTML = '<div class="empty">暂无数据</div>';
+    return;
+  }
+
+  renderStage(analysis);
+  renderKPIs(analysis, summary);
+  renderTraffic(analysis, summary);
+  renderQuality(analysis);
+  renderSuggestions(analysis);
+  renderAnomalies(analysis);
+  renderRetention(analysis);
+}
+
+function renderStage(a) {
+  const tag = document.getElementById("stageTag");
+  if (!a.stage) { tag.innerHTML = ""; return; }
+  const labels = { verification: "验证期", signed: "已签约", finished: "已完结", ongoing: "连载中" };
+  const cls = { verification: "stage-verification", signed: "stage-signed", finished: "stage-finished", ongoing: "stage-ongoing" };
+  tag.innerHTML = `<span class="stage-tag ${cls[a.stage] || ''}">${a.stageLabel || labels[a.stage] || a.stage}</span>`;
+}
+
+function renderKPIs(a, s) {
+  const revenue = a.revenue || {};
+  const quality = a.quality || {};
+  const update = a.analysis?.updateScore || 0;
+
+  let revenueClass = "accent", revenueIcon = "";
+  if (revenue.recent7d < 1) { revenueClass = "danger"; revenueIcon = " 📉"; }
+  else if (revenue.recent7d > 50) { revenueClass = "success"; revenueIcon = " 📈"; }
+
+  let updateClass = "success", updateLabel = "稳定日更";
+  if (update < 60) { updateClass = "danger"; updateLabel = "频繁断更"; }
+  else if (update < 90) { updateClass = "warn"; updateLabel = "偶有断更"; }
+
+  document.getElementById("kpiRow").innerHTML = `
+    <div class="kpi-card ${revenueClass}">
+      <div class="value">¥${fmt(revenue.total, 2)}</div>
+      <div class="label">累计收益</div>
+      <div class="sub">近7天 ¥${fmt(revenue.recent7d, 2)}${revenueIcon}</div>
+    </div>
+    <div class="kpi-card ${quality.avgCompletionRate > 20 ? 'success' : 'danger'}">
+      <div class="value">${pct(quality.avgCompletionRate)}</div>
+      <div class="label">平均读完率</div>
+      <div class="sub">${quality.avgCompletionRate < 15 ? '⚠ 远低于健康线 20%' : '接近健康线'}</div>
+    </div>
+    <div class="kpi-card accent">
+      <div class="value">${comma(quality.totalWords || 0)}</div>
+      <div class="label">累计字数</div>
+      <div class="sub">日均 ${comma(a.analysis?.avgDailyWords || 0)} 字</div>
+    </div>
+    <div class="kpi-card ${updateClass}">
+      <div class="value">${update}分</div>
+      <div class="label">更新一致性</div>
+      <div class="sub">${updateLabel} · ${a.analysis?.dataDays || 0}天数据</div>
+    </div>
+  `;
+}
+
+function renderTraffic(a, s) {
+  const sources = s?.traffic || a.analysis?.traffic?.raw || {};
+  const total = Object.values(sources).reduce((x,y) => x+y, 0);
+
+  if (total === 0) {
+    document.getElementById("trafficBars").style.display = "none";
+    document.getElementById("trafficEmpty").style.display = "block";
+    return;
+  }
+  document.getElementById("trafficBars").style.display = "block";
+  document.getElementById("trafficEmpty").style.display = "none";
+
+  const sorted = Object.entries(sources).sort((a,b) => b[1] - a[1]);
+  document.getElementById("trafficBars").innerHTML = sorted.map(([name, num]) => {
+    const p = total > 0 ? (num / total * 100) : 0;
+    return `<div class="traffic-bar">
+      <span class="name">${name}</span>
+      <span class="num">${comma(num)}</span>
+      <span class="bar-track"><span class="bar-fill ${trafficBarClass(name)}" style="width:${Math.max(p, 2)}%"></span></span>
+      <span style="font-size:12px;color:#888;width:40px">${pct(p)}</span>
+    </div>`;
+  }).join("");
+
+  // Show search ratio warning
+  const searchPct = total > 0 ? (sources["搜索"] || 0) / total * 100 : 0;
+  if (searchPct > 50) {
+    document.getElementById("trafficBars").innerHTML +=
+      `<div style="margin-top:12px;padding:10px 14px;background:#fff3cd;border-radius:6px;font-size:13px;color:#856404">
+        ⚠ 搜索占比 ${pct(searchPct)} — 平台尚未开放推荐流量
+      </div>`;
+  }
+}
+
+function renderQuality(a) {
+  const q = a.quality || {};
+  const rev = a.revenue || {};
+  const totalWords = q.totalWords || 0;
+  const rpm = totalWords > 0 ? (rev.total / totalWords * 1000) : 0;
+
+  document.getElementById("qualityMetrics").innerHTML = `
+    <div class="metric-row"><span class="m-label">平均读完率</span>
+      <span><span class="m-value">${pct(q.avgCompletionRate)}</span><span class="m-trend ${q.avgCompletionRate > 20 ? 'trend-up' : 'trend-down'}">${q.avgCompletionRate > 20 ? '↑ 健康' : '↓ 偏低'}</span></span></div>
+    <div class="metric-row"><span class="m-label">平均跟读率</span>
+      <span><span class="m-value">${pct(q.avgFollowRate)}</span><span class="m-trend ${q.avgFollowRate > 30 ? 'trend-up' : 'trend-down'}">${q.avgFollowRate > 30 ? '↑ 正常' : '↓ 偏低'}</span></span></div>
+    <div class="metric-row"><span class="m-label">千字收益</span>
+      <span><span class="m-value">¥${fmt(rpm, 3)}</span><span class="m-trend ${rpm > 1 ? 'trend-up' : rpm > 0.3 ? 'trend-flat' : 'trend-down'}">${rpm > 1 ? '↑ 高效' : rpm > 0.3 ? '→ 一般' : '↓ 待改善'}</span></span></div>
+    <div class="metric-row"><span class="m-label">首发天数</span>
+      <span><span class="m-value">${a.daysSinceFirstPublish || "--"} 天</span></span></div>
+    <div class="metric-row"><span class="m-label">数据覆盖天数</span>
+      <span><span class="m-value">${a.analysis?.dataDays || 0} 天</span></span></div>
+    <div class="metric-row"><span class="m-label">日均字数（中位数）</span>
+      <span><span class="m-value">${comma(a.analysis?.avgDailyWords || 0)} 字</span>
+        <span class="m-trend ${a.analysis?.avgDailyWords > 8000 ? 'trend-down' : a.analysis?.avgDailyWords < 4000 ? 'trend-down' : 'trend-up'}">${a.analysis?.avgDailyWords > 8000 ? '↓ 过快' : a.analysis?.avgDailyWords < 4000 ? '↓ 过慢' : '↑ 甜区'}</span></span></div>
+    <div class="metric-row"><span class="m-label">总流量（昨日）</span>
+      <span><span class="m-value">${comma(a.analysis?.traffic?.totalTraffic || 0)} 人</span></span></div>
+  `;
+}
+
+function renderSuggestions(a) {
+  const sug = a.suggestions || [];
+  if (sug.length === 0) {
+    document.getElementById("suggestions").style.display = "none";
+    document.getElementById("suggestionsEmpty").style.display = "block";
+    return;
+  }
+  document.getElementById("suggestions").style.display = "block";
+  document.getElementById("suggestionsEmpty").style.display = "none";
+
+  document.getElementById("suggestions").innerHTML = sug.map(s => `
+    <div class="suggestion priority-${s.priority || 'info'}">
+      <div class="s-title">${s.priority === 'high' ? '🔴' : s.priority === 'medium' ? '🟡' : '🔵'} ${s.title || s.category}</div>
+      <div>${s.detail || ''}</div>
+    </div>
+  `).join("");
+}
+
+function renderAnomalies(a) {
+  const anomalies = a.analysis?.anomalies || [];
+  if (anomalies.length === 0) {
+    document.getElementById("anomalies").style.display = "none";
+    document.getElementById("anomaliesEmpty").style.display = "block";
+    return;
+  }
+  document.getElementById("anomalies").style.display = "block";
+  document.getElementById("anomaliesEmpty").style.display = "none";
+
+  document.getElementById("anomalies").innerHTML = anomalies.map(an => `
+    <div class="anomaly-item">
+      <span class="ch-num">第${an.chapter}章</span>
+      <span class="ch-name">${an.title || ''}</span>
+      <span class="ch-badge ${an.type === 'completion_drop' ? 'badge-drop' : 'badge-drop'}">
+        ${an.type === 'completion_drop' ? '读完率暴跌' : '跟读率暴跌'}
+      </span>
+      <span style="font-size:12px;color:#888">${an.value}% vs 平均 ${an.avg}%</span>
+    </div>
+  `).join("");
+}
+
+function renderRetention(a) {
+  const q = a.quality || {};
+  const early = q.earlyRetention, mid = q.midRetention, late = q.lateRetention;
+
+  function arrow(from, to) {
+    if (from == null || to == null) return "→";
+    const drop = from - to;
+    if (drop > 5) return `<span style="color:#e74c3c">↓${pct(drop)}</span>`;
+    if (drop < -2) return `<span style="color:#27ae60">↑${pct(-drop)}</span>`;
+    return `<span style="color:#95a5a6">→</span>`;
+  }
+
+  document.getElementById("retentionFlow").innerHTML = `
+    <div class="retention-flow" style="justify-content:center">
+      <div class="retention-step">
+        <div class="pct" style="color:#667eea">${pct(early)}</div>
+        <div class="zone">前 1/3 章节</div>
+      </div>
+      <div class="retention-arrow">${arrow(early, mid)}</div>
+      <div class="retention-step">
+        <div class="pct" style="color:#764ba2">${pct(mid)}</div>
+        <div class="zone">中 1/3 章节</div>
+      </div>
+      <div class="retention-arrow">${arrow(mid, late)}</div>
+      <div class="retention-step">
+        <div class="pct" style="color:#e74c3c">${pct(late)}</div>
+        <div class="zone">后 1/3 章节</div>
+      </div>
+    </div>
+    <div style="text-align:center;font-size:13px;color:#888;margin-top:4px">
+      ${early && late && early - late > 5
+        ? `⚠ 读完率下滑 ${pct(early - late)}，读者在后期大量流失`
+        : early && late && late > early
+        ? `✓ 后期读完率回升，内容质量在提升`
+        : `读者留存趋势（三段式对比）`}
+    </div>
+  `;
+}
+
+// Init
+loadBooks().then(() => loadAll());
+</script>
+
+</body>
+</html>
