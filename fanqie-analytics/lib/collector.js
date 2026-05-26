@@ -10,6 +10,13 @@ function today() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// ── Local-time ISO-like string (not UTC) for display in China timezone ──
+function localISO() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 // ── Extract data update timestamp from page text ──────────────────
 // 番茄不同数据模块的更新时间不同（收益通常比阅读晚1-2小时）
 function extractUpdateTime(pageText) {
@@ -676,6 +683,10 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
   const results = { worksData: null, quality: null, traffic: null, revenue: null };
   const freshness = {}; // per-section update timestamps
 
+  // 确保在数据总览tab — 上一本书的采集可能把页面留在收益/质量/流量tab
+  await jsClick(page, "小说数据");
+  await page.waitForTimeout(400);
+
   // 1. Works data
   try { results.worksData = await collectWorksData(page); } catch (e) { /* continue */ }
   try {
@@ -700,16 +711,19 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
     // Revenue freshness even in fast mode
     const fastRevDates = (results.revenue?.dailyRevenue || []).map(r => r.date).filter(Boolean).sort().reverse();
     const fastFreshness = {};
-    if (freshness.worksData) fastFreshness.worksData = { updateTime: freshness.worksData, stale: freshness.worksData.slice(0,10) !== date };
+    if (freshness.worksData) {
+      const ws = freshness.worksData.slice(0, 10);
+      fastFreshness.worksData = { updateTime: freshness.worksData, stale: ws !== date, message: ws !== date ? `阅读数据最新为 ${ws}，今日尚未更新` : null };
+    }
     if (fastRevDates.length > 0) {
       const y = new Date(); y.setDate(y.getDate() - 1);
-      const yd = y.toISOString().slice(0, 10);
-      fastFreshness.revenue = { updateTime: fastRevDates[0], stale: fastRevDates[0] < yd };
+      const yd = `${y.getFullYear()}-${String(y.getMonth()+1).padStart(2,"0")}-${String(y.getDate()).padStart(2,"0")}`;
+      fastFreshness.revenue = { updateTime: fastRevDates[0], stale: fastRevDates[0] < yd, message: fastRevDates[0] < yd ? `收益数据最新为 ${fastRevDates[0]}，今日尚未更新` : null };
     }
     return {
       date,
       book: bookName, status: bookStatus,
-      collectedAt: new Date().toISOString(),
+      collectedAt: localISO(),
       worksData: results.worksData,
       quality: results.quality,
       traffic: null,
@@ -860,7 +874,7 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
   // 昨日日期——收益数据永远滞后一天，最新日期=昨天即为新鲜
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
-  const yesterdayStr = yesterday.toISOString().slice(0, 10);
+  const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth()+1).padStart(2,"0")}-${String(yesterday.getDate()).padStart(2,"0")}`;
   const dataFreshness = {};
   for (const [section, ts] of Object.entries(freshness)) {
     if (!ts) {
@@ -886,7 +900,7 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
     date,
     book: bookName,
     status: bookStatus,
-    collectedAt: new Date().toISOString(),
+    collectedAt: localISO(),
     worksData: results.worksData || {},
     quality: {
       book: bookName,

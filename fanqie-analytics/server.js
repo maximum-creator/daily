@@ -590,6 +590,16 @@ async function runCollection(tenantId, force, todayStr, todayDir, progress, book
           if (fs.existsSync(tPath)) {
             try { fastSummary.traffic = JSON.parse(fs.readFileSync(tPath, "utf-8")); } catch (e) { /* keep fastSummary.traffic */ }
           }
+          // Merge dataFreshness: fast mode only refreshed worksData+revenue;
+          // preserve quality/traffic freshness from existing data
+          if (existing.dataFreshness) {
+            fastSummary.dataFreshness = fastSummary.dataFreshness || {};
+            for (const section of ["quality", "traffic"]) {
+              if (!fastSummary.dataFreshness[section] && existing.dataFreshness[section]) {
+                fastSummary.dataFreshness[section] = existing.dataFreshness[section];
+              }
+            }
+          }
           saveCollection(DATA_DIR, tenantId, fastSummary);
           progress.books[i].status = "updated";
           collected.push({
