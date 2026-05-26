@@ -1756,52 +1756,50 @@ app.get("/api/v1/analysis", (req, res) => {
     }
   }
 
-  res.json({
-    code: 0,
-    data: {
-      book: bookName,
-      status,
-      stage,
-      stageLabel: {
-        unsigned: "未签约",
-        verification: "验证期",
-        signed: "签约期",
-        ongoing: "连载中",
-        finished: "已完结",
-      }[stage] || "连载中",
-      daysSinceFirstPublish,
-      totalWords: latestWords,
-      analysis: {
-        updateScore,
-        avgDailyWords,
-        dataDays,
-        traffic: { totalTraffic, searchRatio: Math.round(searchRatio * 100) / 100 },
-        quality: {
-          avgCompletionRate: avgCompletion,
-          avgFollowRate: avgFollow,
-          earlyRetention: earlyRate,
-          midRetention: midRate,
-          lateRetention: lateRate,
-          milestone100k: milestone100k?.completionRate || null,
-          milestone50k: milestone50k?.completionRate || null,
-        },
-        revenue: {
-          total: Math.round(totalRevenue * 100) / 100,
-          recent7d: Math.round(recent7Revenue * 100) / 100,
-          perKWords: latestWords > 0 ? Math.round(totalRevenue / (latestWords / 1000) * 1000) / 1000 : 0,
-        },
-        anomalies: anomalies.slice(0, 5),
-        completionCurve,
-        biggestDrop,
-        trends,
-        funnel,
-        pacing,
-        benchmarks,
+  const responseData = {
+    book: bookName,
+    status,
+    stage,
+    stageLabel: {
+      unsigned: "未签约",
+      verification: "验证期",
+      signed: "签约期",
+      ongoing: "连载中",
+      finished: "已完结",
+    }[stage] || "连载中",
+    daysSinceFirstPublish,
+    totalWords: latestWords,
+    analysis: {
+      updateScore,
+      avgDailyWords,
+      dataDays,
+      traffic: { totalTraffic, searchRatio: Math.round(searchRatio * 100) / 100 },
+      quality: {
+        avgCompletionRate: avgCompletion,
+        avgFollowRate: avgFollow,
+        earlyRetention: earlyRate,
+        midRetention: midRate,
+        lateRetention: lateRate,
+        milestone100k: milestone100k?.completionRate || null,
+        milestone50k: milestone50k?.completionRate || null,
       },
-      suggestions,
-      dataFreshness: freshness,
+      revenue: {
+        total: Math.round(totalRevenue * 100) / 100,
+        recent7d: Math.round(recent7Revenue * 100) / 100,
+        perKWords: latestWords > 0 ? Math.round(totalRevenue / (latestWords / 1000) * 1000) / 1000 : 0,
+      },
+      anomalies: anomalies.slice(0, 5),
+      completionCurve,
+      biggestDrop,
+      trends,
+      funnel,
+      pacing,
+      benchmarks,
     },
-  });
+    suggestions,
+    dataFreshness: freshness,
+  };
+  res.json({ code: 0, data: responseData });
 });
 
 // ── Helper: Revenue milestone ──
@@ -1838,8 +1836,8 @@ app.get("/api/v1/daily", (req, res) => {
 
   const revenue = latest.revenue?.overview?.yesterdayRevenue || 0;
   const prevRevenue = prev?.revenue?.overview?.yesterdayRevenue || 0;
-  const readers = latest.worksData?.stats?.readers || 0;
-  const prevReaders = prev?.worksData?.stats?.readers || 0;
+  const readers = latest.worksData?.["阅读人数"] || 0;
+  const prevReaders = prev?.worksData?.["阅读人数"] || 0;
 
   // Changes
   const revChange = prevRevenue > 0 ? Math.round((revenue - prevRevenue) / prevRevenue * 100) : (revenue > 0 ? 100 : 0);
@@ -1889,7 +1887,7 @@ app.get("/api/v1/weekly", (req, res) => {
   const recent7 = logData.slice(-7);
   const dates = recent7.map(e => e.date);
   const revenues = recent7.map(e => e.revenue?.overview?.yesterdayRevenue || 0);
-  const readersList = recent7.map(e => e.worksData?.stats?.readers || 0);
+  const readersList = recent7.map(e => e.worksData?.["阅读人数"] || 0);
   const completionRates = recent7.map(e => {
     const ch = (e.quality?.chapters || []).map(c => c.completionRate).filter(Boolean);
     return ch.length > 0 ? Math.round(ch.reduce((a, b) => a + b, 0) / ch.length) : 0;
