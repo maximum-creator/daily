@@ -38,12 +38,23 @@ async function launchContext(tenantId) {
 async function getPage(tenantId) {
   let entry = pool.get(tenantId);
 
-  if (!entry) {
-    const context = await launchContext(tenantId);
-    entry = { context, pageCount: 0, busy: false };
-    pool.set(tenantId, entry);
+  if (entry) {
+    // Verify context is still alive before using it
+    try {
+      const page = await entry.context.newPage();
+      entry.busy = true;
+      entry.pageCount++;
+      return page;
+    } catch (e) {
+      // Context was killed externally — clean up and recreate
+      await entry.context.close().catch(() => {});
+      pool.delete(tenantId);
+    }
   }
 
+  const context = await launchContext(tenantId);
+  entry = { context, pageCount: 0, busy: false };
+  pool.set(tenantId, entry);
   entry.busy = true;
   entry.pageCount++;
   const page = await entry.context.newPage();
