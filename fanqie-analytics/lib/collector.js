@@ -847,6 +847,10 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
 
   // Build dataFreshness for API consumer
   const todayStr = date;
+  // 昨日日期——收益数据永远滞后一天，最新日期=昨天即为新鲜
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayStr = yesterday.toISOString().slice(0, 10);
   const dataFreshness = {};
   for (const [section, ts] of Object.entries(freshness)) {
     if (!ts) {
@@ -854,12 +858,16 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
       continue;
     }
     const tsDate = ts.slice(0, 10);
-    const stale = tsDate !== todayStr;
+    // 收益数据：最新日期的dailyRevenue条目应是昨天（今天收益还没结算）
+    // 其他模块：页面"数据更新时间"应是今天
+    const stale = section === "revenue"
+      ? tsDate < yesterdayStr   // 收益：比昨天还老 → 未更新
+      : tsDate !== todayStr;     // 阅读/流量/质量：不是今天 → 未更新
     dataFreshness[section] = {
       updateTime: ts,
       stale,
       message: stale
-        ? `${section==="worksData"?"阅读":section==="revenue"?"收益":section==="traffic"?"流量":"质量"}数据最新为 ${tsDate}，今日${tsDate < todayStr ? "尚未更新" : ""}`
+        ? `${section==="worksData"?"阅读":section==="revenue"?"收益":section==="traffic"?"流量":"质量"}数据最新为 ${tsDate}，今日${tsDate < (section==="revenue"?yesterdayStr:todayStr) ? "尚未更新" : ""}`
         : null,
     };
   }
