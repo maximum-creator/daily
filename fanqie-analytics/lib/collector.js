@@ -711,9 +711,12 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
     // Revenue freshness even in fast mode
     const fastRevDates = (results.revenue?.dailyRevenue || []).map(r => r.date).filter(Boolean).sort().reverse();
     const fastFreshness = {};
+    // worksData IS freshly collected in fast mode — fallback to today if no platform timestamp
     if (freshness.worksData) {
       const ws = freshness.worksData.slice(0, 10);
       fastFreshness.worksData = { updateTime: freshness.worksData, stale: ws !== date, message: ws !== date ? `阅读数据最新为 ${ws}，今日尚未更新` : null };
+    } else {
+      fastFreshness.worksData = { updateTime: date + " (本次采集)", stale: false, message: null };
     }
     if (fastRevDates.length > 0) {
       const y = new Date(); y.setDate(y.getDate() - 1);
@@ -878,7 +881,8 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
   const dataFreshness = {};
   for (const [section, ts] of Object.entries(freshness)) {
     if (!ts) {
-      dataFreshness[section] = { updateTime: null, stale: null };
+      // No platform timestamp found, but we just collected this section — it's fresh
+      dataFreshness[section] = { updateTime: date + " (本次采集)", stale: false, message: null };
       continue;
     }
     const tsDate = ts.slice(0, 10);
