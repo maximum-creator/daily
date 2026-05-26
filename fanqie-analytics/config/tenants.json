@@ -11,8 +11,9 @@
     "demo": {
       "apiKey": "fa_sk_demo_001",
       "name": "演示客户",
-      "plan": "trial",
-      "maxBooks": 3,
+      "plan": "enterprise",
+      "maxBooks": 999,
+      "role": "admin",
       "createdAt": "2026-05-25"
     }
   }

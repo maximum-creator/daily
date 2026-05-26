@@ -19,6 +19,7 @@ const { getPage, releasePage, hasProfile, markProfileReady, PROFILES_DIR } = req
 const { collectDashboard, collectForBook, saveCollection, switchToBook, jsClick, today } = require("./lib/collector");
 const { usageTracker, getTodayUsage, getMonthlyUsage, getAllTenantsUsage, getTodayCollectionCount } = require("./lib/usage-tracker");
 const { getPlan, getPlanLimits } = require("./lib/plans");
+const { startScheduler } = require("./lib/scheduler");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -50,10 +51,15 @@ app.use((req, res, next) => {
 app.use(express.static(path.join(__dirname, "public")));
 
 // Stricter rate limit for collect endpoint: 2 req/min per tenant
+// Enterprise 租户免限流（管理员/付费客户不受此限制）
 // Applied AFTER authMiddleware so req.tenant is guaranteed to exist
 const collectLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 2,
+  skip: (req) => {
+    const plan = req.tenant?.plan || "trial";
+    return plan === "enterprise";
+  },
   keyGenerator: (req) => req.tenant?.id || "anonymous",
   standardHeaders: true,
   legacyHeaders: false,
@@ -362,6 +368,11 @@ app.post("/api/v1/collect", collectLimiter, async (req, res) => {
   const booksParam = req.query.books || ""; // comma-separated book names to filter
   const fastMode = req.query.fast === "true" || req.query.fast === "1";
 
+  // 时间策略：中午12点前数据平台通常未更新，保留缓存；
+  // 12点后平台已更新，始终强制重采（数据可能延后到13点）
+  const currentHour = new Date().getHours();
+  const isAfterNoon = currentHour >= 12;
+
   // ── Plan quota check ──
   const plan = req.tenant.plan || "trial";
   const limits = getPlanLimits(plan);
@@ -395,9 +406,10 @@ app.post("/api/v1/collect", collectLimiter, async (req, res) => {
     return res.json({ code: 409, message: "该客户正在采集中，请稍后再试" });
   }
 
-  // Check same-day cache — only return immediately when no book filter and not forcing
+  // Check same-day cache — only valid before noon (platform data updates ~12-13)
+  // After noon, always re-collect for fresh data even if today's dir exists
   // With ?books= specified, always proceed to do incremental refresh of those books
-  if (!force && !booksParam && fs.existsSync(todayDir)) {
+  if (!force && !booksParam && !isAfterNoon && fs.existsSync(todayDir)) {
     const books = fs.readdirSync(todayDir).filter(f =>
       fs.statSync(path.join(todayDir, f)).isDirectory());
     const summaries = [];
@@ -412,7 +424,7 @@ app.post("/api/v1/collect", collectLimiter, async (req, res) => {
         code: 0,
         data: summaries.map(s => ({ date: s.date, book: s.book, collectedAt: s.collectedAt })),
         cached: true,
-        message: `今日已采集 ${summaries.length} 本书，返回缓存（使用 ?force=true 或 ?books=X 刷新指定书）`,
+        message: `今日已采集 ${summaries.length} 本书，返回缓存。数据平台每日12:00后更新，届时采集将自动刷新。`,
       });
     }
   }
@@ -1261,12 +1273,15 @@ app.get("/api/v1/analysis", (req, res) => {
   };
 
   // ── Platform Benchmarks ──
+  // ── Platform Benchmarks (基于番茄实际标准，偏向严格) ──
+  // 番茄验证期逻辑：读完率是最重要的信号，低于25%基本不会过验证
+  // 签约后追读率是关键——直接影响推荐位质量
   const benchmarkSets = {
-    unsigned: { completion: 10, follow: 15, searchRatioMax: 95, bookmarkRate: 3 },
-    verification: { completion: 20, follow: 30, searchRatioMax: 70, bookmarkRate: 5 },
-    signed: { completion: 25, follow: 35, searchRatioMax: 40, bookmarkRate: 8 },
-    ongoing: { completion: 15, follow: 25, searchRatioMax: 30, bookmarkRate: 5 },
-    finished: { completion: 10, follow: 15, searchRatioMax: 50, bookmarkRate: 3 },
+    unsigned:    { completion: 20, follow: 25, searchRatioMax: 85, bookmarkRate: 5 },
+    verification:{ completion: 30, follow: 35, searchRatioMax: 55, bookmarkRate: 8 },
+    signed:      { completion: 35, follow: 40, searchRatioMax: 30, bookmarkRate: 10 },
+    ongoing:     { completion: 25, follow: 30, searchRatioMax: 25, bookmarkRate: 8 },
+    finished:    { completion: 15, follow: 20, searchRatioMax: 50, bookmarkRate: 5 },
   };
   const bm = benchmarkSets[stage] || benchmarkSets.ongoing;
   const benchmarks = {
@@ -2070,6 +2085,28 @@ app.listen(PORT, () => {
   for (const [id, t] of Object.entries(tenants)) {
     console.log(`     - ${t.name} (${t.plan}: ${t.maxBooks}本)`);
   }
+
+  // ── Start auto-collection scheduler ──
+  // Wraps runCollection for scheduled background execution (no req/res context)
+  const scheduledCollect = (tenantId) => {
+    const force = true;
+    const todayStr = today();
+    const todayDir = path.join(DATA_DIR, tenantId, todayStr);
+    const progress = {
+      phase: "starting",
+      message: "定时采集启动…",
+      totalBooks: 0,
+      currentBook: 0,
+      done: false,
+      startTime: Date.now(),
+      elapsed: 0,
+      books: [],
+    };
+    collectProgress.set(tenantId, progress);
+    collecting.add(tenantId);
+    return runCollection(tenantId, force, todayStr, todayDir, progress, "", false);
+  };
+  startScheduler(tenants, scheduledCollect);
 
   console.log("\n   示例请求:");
   console.log(`   curl -H "Authorization: Bearer fa_sk_demo_001" http://localhost:${PORT}/api/v1/summary`);

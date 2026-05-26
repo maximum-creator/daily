@@ -781,15 +781,23 @@ async function quickAnalysis(mode) {
   const q = "?book=" + encodeURIComponent(book);
   const data = await call(endpoint + q);
 
+  // 从入口区域触发的快捷分析，要先切换到dashboard视图才能看到结果
+  document.getElementById("entryArea").style.display = "none";
+  document.getElementById("dashboard").classList.add("active");
+
   if (!data) {
     document.getElementById("quickResult").innerHTML = '<div class="panel" style="text-align:center;padding:20px;color:#e74c3c">暂无数据</div>';
     document.getElementById("quickResult").style.display = "block";
+    // Keep back button visible, hide full dashboard panels
+    document.getElementById("kpiRow").innerHTML = "";
+    document.getElementById("trafficBars").innerHTML = "";
+    document.getElementById("suggestions").innerHTML = "";
     return;
   }
 
   document.getElementById("dashBook").textContent = book;
   document.getElementById("dashTime").textContent = new Date().toLocaleString();
-  document.getElementById("dashStage").textContent = "";
+  document.getElementById("dashStage").textContent = mode === "daily" ? "昨日快照" : "近七日评估";
   document.getElementById("stageBanner").innerHTML = "";
   document.getElementById("kpiRow").innerHTML = "";
   document.getElementById("quickResult").style.display = "block";
@@ -961,7 +969,7 @@ function renderDashboard(a, ch, summary, bookName) {
 
   document.getElementById("kpiRow").innerHTML = `
     <div class="kpi-card"><div class="val ${totalRevenue<1?'c-red':totalRevenue<50?'c-orange':'c-green'}">¥${f(totalRevenue,2)}<span class="${trendCls[trends.revenue]||''}" style="font-size:14px">${trendIcon[trends.revenue]||''}</span></div><div class="lbl">累计收益</div><div class="sub">近7天 ¥${f(revenue.recent7d||0,2)}</div></div>
-    <div class="kpi-card"><div class="val ${avgComp<10?'c-red':avgComp<20?'c-orange':'c-green'}">${pct(avgComp)}<span class="${trendCls[trends.completion]||''}" style="font-size:14px">${trendIcon[trends.completion]||''}</span></div><div class="lbl">平均读完率</div><div class="sub">${avgComp<15?'⚠ 低于健康线 20%':'接近健康线'}</div></div>
+    <div class="kpi-card"><div class="val ${avgComp<20?'c-red':avgComp<30?'c-orange':'c-green'}">${pct(avgComp)}<span class="${trendCls[trends.completion]||''}" style="font-size:14px">${trendIcon[trends.completion]||''}</span></div><div class="lbl">平均读完率</div><div class="sub">${avgComp<20?'⚠ 低于验证门槛 30%':avgComp<30?'⚠ 接近健康线 30%':'≥ 30% 达健康线'}</div></div>
     <div class="kpi-card"><div class="val c-blue">${cm(totalWords)}</div><div class="lbl">累计字数</div><div class="sub">千字收益 ¥${f(rpm,3)}</div></div>
     <div class="kpi-card"><div class="val ${updateScore<60?'c-red':updateScore<90?'c-orange':'c-green'}">${updateScore}分</div><div class="lbl">更新一致性</div><div class="sub">${updateScore>=90?'稳定日更':updateScore>=60?'偶有断更':'频繁断更 ⚠'}</div></div>`;
 
@@ -983,7 +991,7 @@ function renderDashboard(a, ch, summary, bookName) {
 
   // Quality
   document.getElementById("qualityMetrics").innerHTML = `
-    <div class="mt-row"><span class="mt-l">平均读完率</span><span class="mt-v">${pct(avgComp)} <span class="badge ${avgComp<15?'badge-red':avgComp<25?'badge-yellow':'badge-green'}">${avgComp<15?'危险':avgComp<25?'一般':'良好'}</span></span></div>
+    <div class="mt-row"><span class="mt-l">平均读完率</span><span class="mt-v">${pct(avgComp)} <span class="badge ${avgComp<20?'badge-red':avgComp<30?'badge-yellow':'badge-green'}">${avgComp<20?'危险':avgComp<30?'一般':'良好'}</span></span></div>
     <div class="mt-row"><span class="mt-l">平均跟读率</span><span class="mt-v">${pct(avgFollow)}</span></div>
     <div class="mt-row"><span class="mt-l">千字收益</span><span class="mt-v">¥${f(rpm,3)}</span></div>
     <div class="mt-row"><span class="mt-l">日均字数（中位数）</span><span class="mt-v">${cm(q.avgDailyWords||0)} 字 <span class="badge ${(q.avgDailyWords||0)>8000?'badge-red':(q.avgDailyWords||0)<4000?'badge-yellow':'badge-green'}">${(q.avgDailyWords||0)>8000?'过快':(q.avgDailyWords||0)<4000?'偏慢':'甜区'}</span></span></div>
@@ -1116,6 +1124,8 @@ function renderDashboard(a, ch, summary, bookName) {
 function goBack() {
   document.getElementById("dashboard").classList.remove("active");
   document.getElementById("entryArea").style.display = "block";
+  document.getElementById("quickResult").style.display = "none";
+  document.getElementById("quickResult").innerHTML = "";
   const hasVal = !!document.getElementById("bookSelect").value;
   document.getElementById("analyzeBtn").disabled = !hasVal;
   document.getElementById("dailyBtn").disabled = !hasVal;
