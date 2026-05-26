@@ -150,6 +150,19 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
 .btn-back{padding:10px 28px;background:#fff;border:1px solid #ddd;border-radius:8px;font-size:13px;color:#888;cursor:pointer}
 .btn-back:hover{background:#fee;color:#c0392b;border-color:#e74c3c}
 
+/* ── Data Freshness Bar ── */
+.freshness-bar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;padding:10px 16px;background:#fff;border-radius:10px;box-shadow:0 1px 4px rgba(0,0,0,0.06);font-size:12px;align-items:center}
+.freshness-bar .fh-label{font-weight:600;color:#666;margin-right:4px}
+.freshness-dot{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:12px;font-size:11px}
+.fh-fresh{background:#e8f5e9;color:#2e7d32}
+.fh-stale{background:#fff3e0;color:#e65100;animation:pulse-stale 2s infinite}
+.fh-stale-confirmed{background:#fce4e4;color:#c0392b;font-weight:700;animation:pulse-stale 1.5s infinite}
+.fh-unknown{background:#f5f5f5;color:#999}
+@keyframes pulse-stale{0%,100%{opacity:1}50%{opacity:0.6}}
+.kpi-card{position:relative}
+.kpi-stale-overlay{position:absolute;top:4px;right:6px;font-size:10px;background:#e74c3c;color:#fff;padding:1px 6px;border-radius:8px;font-weight:700;animation:pulse-stale 1.5s infinite}
+.stale-ribbon{font-size:10px;display:block;color:#e74c3c;margin-top:2px;font-weight:700}
+
 .footer{text-align:center;color:#bbb;font-size:11px;padding:20px}
 .empty-note{text-align:center;padding:30px;color:#aaa;font-size:13px}
 
@@ -251,6 +264,7 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
         <button onclick="quickAnalysis('full')" style="padding:4px 10px;border:1px solid #667eea;border-radius:6px;background:#667eea;color:#fff;cursor:pointer;font-size:12px">🔬 完整分析</button>
       </div>
     </div>
+    <div id="freshnessBar" class="freshness-bar" style="display:none"></div>
     <div id="quickResult" style="display:none;margin-bottom:12px"></div>
 
     <div id="stageBanner"></div>
@@ -959,6 +973,28 @@ function renderDashboard(a, ch, summary, bookName) {
       </div>
     </div>`;
 
+  // ── Data Freshness Bar ──
+  const freshness = a.dataFreshness || {};
+  const sectionLabel = { worksData: "阅读数据", revenue: "收益数据", traffic: "流量数据", quality: "质量数据" };
+  const freshParts = [];
+  let hasStale = false;
+  for (const [section, label] of Object.entries(sectionLabel)) {
+    const info = freshness[section];
+    if (!info || info.updateTime == null) {
+      freshParts.push(`<span class="freshness-dot fh-unknown">${label}：? 未知</span>`);
+    } else if (info.stale) {
+      hasStale = true;
+      freshParts.push(`<span class="freshness-dot fh-stale-confirmed">⚠ ${label}：${info.updateTime.slice(0,10)} 未更新</span>`);
+    } else {
+      freshParts.push(`<span class="freshness-dot fh-fresh">✓ ${label}：已更新</span>`);
+    }
+  }
+  if (freshParts.length > 0) {
+    const bar = document.getElementById("freshnessBar");
+    bar.innerHTML = `<span class="fh-label">📡 数据新鲜度</span>` + freshParts.join("");
+    bar.style.display = "flex";
+  }
+
   // KPI
   const avgComp = quality.avgCompletionRate || 0;
   const avgFollow = quality.avgFollowRate || 0;
@@ -966,9 +1002,10 @@ function renderDashboard(a, ch, summary, bookName) {
   const totalWords = summary?.quality?.cumulativeWords || 0;
   const totalRevenue = revenue.total || 0;
   const rpm = totalWords > 0 ? (totalRevenue / totalWords * 1000) : 0;
+  const revenueStale = (freshness.revenue && freshness.revenue.stale);
 
   document.getElementById("kpiRow").innerHTML = `
-    <div class="kpi-card"><div class="val ${totalRevenue<1?'c-red':totalRevenue<50?'c-orange':'c-green'}">¥${f(totalRevenue,2)}<span class="${trendCls[trends.revenue]||''}" style="font-size:14px">${trendIcon[trends.revenue]||''}</span></div><div class="lbl">累计收益</div><div class="sub">近7天 ¥${f(revenue.recent7d||0,2)}</div></div>
+    <div class="kpi-card">${revenueStale ? '<span class="kpi-stale-overlay">数据未更新</span>' : ''}<div class="val ${totalRevenue<1?'c-red':totalRevenue<50?'c-orange':'c-green'}">¥${f(totalRevenue,2)}<span class="${trendCls[trends.revenue]||''}" style="font-size:14px">${trendIcon[trends.revenue]||''}</span></div><div class="lbl">累计收益</div><div class="sub">${revenueStale ? '<span class="stale-ribbon">⚠ 今日收益尚未更新</span>' : '近7天 ¥'+f(revenue.recent7d||0,2)}</div></div>
     <div class="kpi-card"><div class="val ${avgComp<20?'c-red':avgComp<30?'c-orange':'c-green'}">${pct(avgComp)}<span class="${trendCls[trends.completion]||''}" style="font-size:14px">${trendIcon[trends.completion]||''}</span></div><div class="lbl">平均读完率</div><div class="sub">${avgComp<20?'⚠ 低于验证门槛 30%':avgComp<30?'⚠ 接近健康线 30%':'≥ 30% 达健康线'}</div></div>
     <div class="kpi-card"><div class="val c-blue">${cm(totalWords)}</div><div class="lbl">累计字数</div><div class="sub">千字收益 ¥${f(rpm,3)}</div></div>
     <div class="kpi-card"><div class="val ${updateScore<60?'c-red':updateScore<90?'c-orange':'c-green'}">${updateScore}分</div><div class="lbl">更新一致性</div><div class="sub">${updateScore>=90?'稳定日更':updateScore>=60?'偶有断更':'频繁断更 ⚠'}</div></div>`;
@@ -1126,6 +1163,8 @@ function goBack() {
   document.getElementById("entryArea").style.display = "block";
   document.getElementById("quickResult").style.display = "none";
   document.getElementById("quickResult").innerHTML = "";
+  document.getElementById("freshnessBar").style.display = "none";
+  document.getElementById("freshnessBar").innerHTML = "";
   const hasVal = !!document.getElementById("bookSelect").value;
   document.getElementById("analyzeBtn").disabled = !hasVal;
   document.getElementById("dailyBtn").disabled = !hasVal;

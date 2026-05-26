@@ -10,6 +10,22 @@ function today() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
+// ── Extract data update timestamp from page text ──────────────────
+// 番茄不同数据模块的更新时间不同（收益通常比阅读晚1-2小时）
+function extractUpdateTime(pageText) {
+  const patterns = [
+    /数据更新时间[：:]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/,
+    /更新时间[：:]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/,
+    /统计截止[：:]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/,
+    /(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s*更新/,
+  ];
+  for (const p of patterns) {
+    const m = pageText.match(p);
+    if (m) return m[1];
+  }
+  return null;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // DOM Click Helpers (pure Playwright, headless-safe)
 // ═══════════════════════════════════════════════════════════════════
@@ -658,9 +674,14 @@ function collectTrafficFromApi(apiCalls, legendNames = null) {
 async function collectForBook(page, bookName, bookStatus = "", fastMode = false) {
   const date = today();
   const results = { worksData: null, quality: null, traffic: null, revenue: null };
+  const freshness = {}; // per-section update timestamps
 
   // 1. Works data
   try { results.worksData = await collectWorksData(page); } catch (e) { /* continue */ }
+  try {
+    const t = await page.evaluate(() => document.body?.innerText?.slice(0, 1500) || "");
+    freshness.worksData = extractUpdateTime(t);
+  } catch (e) { /* skip */ }
 
   // Fast mode: skip quality + traffic detail, only collect revenue
   if (fastMode) {
@@ -745,6 +766,10 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
     }
 
     results.quality = await collectQuality(page, qualityApiCalls);
+    try {
+      const t = await page.evaluate(() => document.body?.innerText?.slice(0, 1000) || "");
+      freshness.quality = extractUpdateTime(t);
+    } catch (e) { /* skip */ }
   } catch (e) { /* continue */ }
 
   // 3. Traffic — intercept API calls
@@ -783,6 +808,10 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
     } else {
       results.traffic = { sources: {}, isEmpty: true };
     }
+    try {
+      const t = await page.evaluate(() => document.body?.innerText?.slice(0, 1000) || "");
+      freshness.traffic = extractUpdateTime(t);
+    } catch (e) { /* skip */ }
   } catch (e) { /* continue */ }
 
   // 4. Revenue
@@ -804,6 +833,36 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
 
   const revenue = (revenue30?.dailyRevenue?.length > (results.revenue?.dailyRevenue?.length || 0))
     ? revenue30 : (results.revenue || { overview: { yesterdayRevenue: 0, totalRevenue: 0 }, dailyRevenue: [] });
+
+  // Revenue freshness: use latest date from daily revenue array (most reliable)
+  const revDates = (revenue.dailyRevenue || []).map(r => r.date).filter(Boolean).sort().reverse();
+  freshness.revenue = revDates.length > 0 ? revDates[0] : null;
+  // Also try page text as fallback for the timestamp label
+  if (!freshness.revenue) {
+    try {
+      const t = await page.evaluate(() => document.body?.innerText?.slice(0, 1000) || "");
+      freshness.revenue = extractUpdateTime(t);
+    } catch (e) { /* skip */ }
+  }
+
+  // Build dataFreshness for API consumer
+  const todayStr = date;
+  const dataFreshness = {};
+  for (const [section, ts] of Object.entries(freshness)) {
+    if (!ts) {
+      dataFreshness[section] = { updateTime: null, stale: null };
+      continue;
+    }
+    const tsDate = ts.slice(0, 10);
+    const stale = tsDate !== todayStr;
+    dataFreshness[section] = {
+      updateTime: ts,
+      stale,
+      message: stale
+        ? `${section==="worksData"?"阅读":section==="revenue"?"收益":section==="traffic"?"流量":"质量"}数据最新为 ${tsDate}，今日${tsDate < todayStr ? "尚未更新" : ""}`
+        : null,
+    };
+  }
 
   return {
     date,
@@ -827,6 +886,7 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
     },
     traffic: results.traffic || { sources: {} },
     revenue,
+    dataFreshness,
   };
 }
 
@@ -885,6 +945,7 @@ function saveCollection(dataDir, tenantId, summary) {
 
 module.exports = {
   today,
+  extractUpdateTime,
   // DOM helpers
   jsClick,
   // Book switching

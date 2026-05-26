@@ -1699,6 +1699,35 @@ app.get("/api/v1/analysis", (req, res) => {
     });
   }
 
+  // ── Data Freshness: check if revenue/reading data is stale ──
+  const freshness = latest.dataFreshness || {};
+  const todayStr = today();
+  const staleSections = [];
+  for (const [section, info] of Object.entries(freshness)) {
+    if (info && info.stale) {
+      const label = section === "worksData" ? "阅读数据"
+        : section === "revenue" ? "收益数据"
+        : section === "traffic" ? "流量数据"
+        : section === "quality" ? "质量数据" : section;
+      staleSections.push({ section, label, updateTime: info.updateTime, message: info.message });
+    }
+  }
+  if (staleSections.length > 0) {
+    const staleList = staleSections.map(s => s.message).join("；");
+    const now = new Date();
+    const hour = now.getHours();
+    let timeHint = "";
+    if (hour < 13) timeHint = "番茄平台通常在12:00-14:00陆续刷新数据，收益数据往往最晚更新。建议下午2点后重新采集获取完整数据。";
+    else if (hour < 15) timeHint = "收益数据可能还在更新中，请稍后再试。";
+    else timeHint = "数据延迟超过预期，可能是平台异常或昨日无收益，请核对番茄后台确认。";
+    suggestions.unshift({
+      priority: "high",
+      category: "data_freshness",
+      title: `⚠️ 数据未完全更新 — ${staleSections.map(s => s.label).join("、")}`,
+      detail: `${staleList}。${timeHint}`,
+    });
+  }
+
   // 排序（high → medium → info）
   const priorityOrder = { high: 0, medium: 1, info: 2 };
   suggestions.sort((a, b) => (priorityOrder[a.priority] || 0) - (priorityOrder[b.priority] || 0));
@@ -1761,6 +1790,7 @@ app.get("/api/v1/analysis", (req, res) => {
         benchmarks,
       },
       suggestions,
+      dataFreshness: freshness,
     },
   });
 });
