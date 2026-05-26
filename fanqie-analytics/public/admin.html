@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>番茄数据API — 管理后台</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#f0f2f5;color:#1a1a2e}
+.header{background:linear-gradient(135deg,#1a1a2e,#0f3460);color:#fff;padding:16px 28px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:18px}.header .sub{font-size:12px;opacity:0.55}
+.container{max-width:1200px;margin:0 auto;padding:20px}
+
+/* Summary cards */
+.summary-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:20px}
+.summary-card{background:#fff;border-radius:10px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,0.06)}
+.summary-card .val{font-size:28px;font-weight:700}
+.summary-card .lbl{font-size:12px;color:#888;margin-top:4px}
+.c-blue{color:#667eea}.c-green{color:#27ae60}.c-orange{color:#e67e22}.c-red{color:#e74c3c}
+
+/* Tenant table */
+.panel{background:#fff;border-radius:10px;padding:24px;margin-bottom:16px;box-shadow:0 1px 4px rgba(0,0,0,0.06)}
+.panel h2{font-size:16px;margin-bottom:16px;padding-bottom:10px;border-bottom:2px solid #667eea}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:10px 12px;background:#f8f9fc;color:#666;font-weight:600;font-size:12px;border-bottom:2px solid #e0e0e0}
+td{padding:10px 12px;border-bottom:1px solid #f0f0f0}
+tr:hover{background:#f8f9fc}
+.badge{display:inline-block;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:700}
+.badge-trial{background:#e3f2fd;color:#1565c0}
+.badge-basic{background:#e8f5e9;color:#2e7d32}
+.badge-pro{background:#f3e5f5;color:#7b1fa2}
+.badge-enterprise{background:#fff3e0;color:#e65100}
+
+.quota-bar{width:80px;height:6px;background:#f0f0f0;border-radius:3px;overflow:hidden;display:inline-block;vertical-align:middle;margin-left:6px}
+.quota-bar .fill{height:100%;border-radius:3px}
+.fill-safe{background:#27ae60}.fill-warn{background:#e67e22}.fill-danger{background:#e74c3c}
+
+.auth-bar{background:#fff;border-radius:8px;padding:10px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px;font-size:13px;box-shadow:0 1px 3px rgba(0,0,0,0.04)}
+.auth-bar input{padding:8px 12px;border:1px solid #ddd;border-radius:6px;width:280px;font-family:monospace;font-size:13px}
+.auth-bar button{padding:8px 18px;background:#667eea;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:13px}
+.auth-bar .connected{color:#27ae60;font-weight:600}
+.auth-bar .error{color:#e74c3c}
+
+.loading{text-align:center;padding:40px;color:#888}
+.footer{text-align:center;color:#bbb;font-size:11px;padding:20px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <h1>番茄数据API · 管理后台</h1>
+    <div class="sub">多租户用量监控 · 套餐管理 · 计费概览</div>
+  </div>
+  <span style="font-size:12px;opacity:0.6" id="clock"></span>
+</div>
+
+<div class="container">
+  <div class="auth-bar">
+    <span>管理员密钥:</span>
+    <input id="adminKey" value="fa_sk_admin_001" placeholder="Admin API Key">
+    <button onclick="connect()">连接</button>
+    <span id="authStatus" style="margin-left:12px">未连接</span>
+  </div>
+
+  <div id="main" style="display:none">
+    <div class="summary-grid" id="summary"></div>
+
+    <div class="panel">
+      <h2>租户总览</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>租户ID</th><th>名称</th><th>套餐</th><th>月费</th>
+            <th>今日API</th><th>今日采集</th><th>本月API</th><th>配额</th>
+          </tr>
+        </thead>
+        <tbody id="tenantRows"></tbody>
+      </table>
+    </div>
+
+    <div class="panel" id="detailPanel" style="display:none">
+      <h2>用量详情 — <span id="detailTenant"></span></h2>
+      <table>
+        <thead><tr><th>日期</th><th>总请求</th><th>接口明细</th></tr></thead>
+        <tbody id="detailRows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="loading" id="loading">请输入管理员密钥并点击连接</div>
+</div>
+
+<div class="footer">番茄数据API · Multi-tenant SaaS · Usage Tracking</div>
+
+<script>
+let adminToken = "";
+
+async function connect() {
+  adminToken = document.getElementById("adminKey").value.trim();
+  if (!adminToken) return;
+  document.getElementById("loading").style.display = "block";
+  document.getElementById("loading").textContent = "连接中...";
+
+  try {
+    const r = await fetch("/api/v1/admin/overview", {
+      headers: { Authorization: "Bearer " + adminToken }
+    });
+    if (r.status !== 200) {
+      document.getElementById("authStatus").innerHTML = '<span class="error">密钥无效</span>';
+      document.getElementById("loading").textContent = "密钥无效，请检查后重试";
+      return;
+    }
+    document.getElementById("authStatus").innerHTML = '<span class="connected">已连接</span>';
+    document.getElementById("main").style.display = "block";
+    document.getElementById("loading").style.display = "none";
+    await refresh();
+    setInterval(refresh, 10000);
+  } catch (e) {
+    document.getElementById("authStatus").innerHTML = '<span class="error">连接失败</span>';
+  }
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/v1/admin/overview", {
+      headers: { Authorization: "Bearer " + adminToken }
+    });
+    const j = await r.json();
+    if (j.code !== 0) return;
+    render(j.data);
+  } catch (e) { /* retry next poll */ }
+}
+
+function render(d) {
+  const tenants = d.tenants || [];
+  const tCount = tenants.length;
+  const activeCount = tenants.filter(t => t.today.total > 0).length;
+  const totalRevenue = d.totalMonthlyRevenue || 0;
+
+  document.getElementById("summary").innerHTML = `
+    <div class="summary-card"><div class="val c-blue">${tCount}</div><div class="lbl">接入平台</div></div>
+    <div class="summary-card"><div class="val c-green">${activeCount}</div><div class="lbl">今日活跃</div></div>
+    <div class="summary-card"><div class="val c-orange">¥${totalRevenue.toLocaleString()}</div><div class="lbl">月费收入 / 月</div></div>
+    <div class="summary-card"><div class="val c-blue">${(d.totalTodayCalls||0).toLocaleString()}</div><div class="lbl">今日API调用</div></div>
+  `;
+
+  const badgeCls = { trial: "badge-trial", basic: "badge-basic", pro: "badge-pro", enterprise: "badge-enterprise" };
+
+  document.getElementById("tenantRows").innerHTML = tenants.map(t => {
+    const collPct = t.limits.maxCollectionsPerDay > 0
+      ? Math.min(100, Math.round(t.today.collection / t.limits.maxCollectionsPerDay * 100)) : 0;
+    const fillCls = collPct > 80 ? "fill-danger" : collPct > 50 ? "fill-warn" : "fill-safe";
+    const limited = t.collectionLimitReached ? ' ⚠️' : '';
+
+    return `<tr>
+      <td><code>${esc(t.id)}</code></td>
+      <td>${esc(t.name)}</td>
+      <td><span class="badge ${badgeCls[t.plan]||'badge-trial'}">${esc(t.planLabel)}</span></td>
+      <td>¥${t.monthlyFee}/月</td>
+      <td>${t.today.total}</td>
+      <td>${t.today.collection}<span class="quota-bar"><span class="fill ${fillCls}" style="width:${collPct}%"></span></span>${limited}</td>
+      <td>${t.month.total}</td>
+      <td>
+        <a href="#" onclick="showDetail('${esc(t.id)}');return false" style="color:#667eea;font-size:12px">查看详情</a>
+      </td>
+    </tr>`;
+  }).join("");
+}
+
+async function showDetail(tid) {
+  try {
+    const r = await fetch("/api/v1/admin/usage?tenant=" + tid + "&days=7", {
+      headers: { Authorization: "Bearer " + adminToken }
+    });
+    const j = await r.json();
+    if (j.code !== 0) return;
+
+    document.getElementById("detailPanel").style.display = "block";
+    document.getElementById("detailTenant").textContent = tid;
+
+    const data = j.data;
+    document.getElementById("detailRows").innerHTML = (data.dailyBreakdown||[]).map(d => `
+      <tr>
+        <td>${d.date}</td>
+        <td>${d.total}</td>
+        <td style="font-size:12px;color:#888">${Object.entries(d.endpoints||{}).map(([k,v]) => `${k}: ${v}`).join(" · ") || "—"}</td>
+      </tr>
+    `).join("") || '<tr><td colspan="3" style="color:#888">暂无数据</td></tr>';
+  } catch (e) {}
+}
+
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s || "";
+  return d.innerHTML;
+}
+
+// Clock
+setInterval(() => {
+  document.getElementById("clock").textContent = new Date().toLocaleString("zh-CN");
+}, 1000);
+</script>
+</body>
+</html>

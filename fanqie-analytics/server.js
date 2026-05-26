@@ -17,6 +17,8 @@ const { chromium } = require("playwright");
 const { authMiddleware, loadTenants } = require("./lib/auth");
 const { getPage, releasePage, hasProfile, markProfileReady, PROFILES_DIR } = require("./lib/browser-manager");
 const { collectDashboard, collectForBook, saveCollection, switchToBook, jsClick, today } = require("./lib/collector");
+const { usageTracker, getTodayUsage, getMonthlyUsage, getAllTenantsUsage, getTodayCollectionCount } = require("./lib/usage-tracker");
+const { getPlan, getPlanLimits } = require("./lib/plans");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -82,14 +84,21 @@ app.get("/api/v1/health", (req, res) => {
         daysCount = fs.readdirSync(tenantDir).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).length;
       } catch (e) { /* skip */ }
     }
+    const planDef = getPlan(t.plan || "trial");
+    const todayUsage = getTodayUsage(id);
     statuses[id] = {
       name: t.name,
       plan: t.plan,
+      planLabel: planDef.name,
+      planFee: planDef.monthlyFee,
       profileReady: profileExists,
       dataDays: daysCount,
       collecting: collecting.has(id),
       loginPending: loginSessions.has(id) && !loginSessions.get(id).ready,
       loginReady: loginSessions.has(id) && loginSessions.get(id).ready,
+      todayApiCalls: todayUsage.total,
+      todayCollections: todayUsage.endpoints["POST /api/v1/collect"] || 0,
+      collectionLimit: planDef.maxCollectionsPerDay,
     };
   }
   res.json({
@@ -103,6 +112,9 @@ app.get("/api/v1/health", (req, res) => {
 
 // ── All /api/v1 routes require API Key ──
 app.use("/api/v1", authMiddleware);
+
+// Usage tracking (after auth so req.tenant is available)
+app.use("/api/v1", usageTracker);
 
 // ── POST /api/v1/login — 网页端登录设置（打开可见浏览器，用户手动登录） ──
 app.post("/api/v1/login", async (req, res) => {
@@ -349,6 +361,34 @@ app.post("/api/v1/collect", collectLimiter, async (req, res) => {
   const force = req.query.force === "true" || req.query.force === "1";
   const booksParam = req.query.books || ""; // comma-separated book names to filter
   const fastMode = req.query.fast === "true" || req.query.fast === "1";
+
+  // ── Plan quota check ──
+  const plan = req.tenant.plan || "trial";
+  const limits = getPlanLimits(plan);
+  const todayCollectCount = getTodayCollectionCount(tenantId);
+  if (todayCollectCount >= limits.maxCollectionsPerDay) {
+    return res.status(429).json({
+      code: 429,
+      message: `今日采集次数已达上限（${limits.maxCollectionsPerDay}次/天），当前套餐: ${getPlan(plan).name}`,
+      plan,
+      limit: limits.maxCollectionsPerDay,
+      used: todayCollectCount,
+    });
+  }
+  // Check book count limit
+  if (booksParam) {
+    const requestedCount = booksParam.split(",").filter(Boolean).length;
+    const maxBooks = req.tenant.maxBooks || limits.maxBooks;
+    if (requestedCount > maxBooks) {
+      return res.status(429).json({
+        code: 429,
+        message: `单次采集书数量超过套餐限制（${maxBooks}本），当前套餐: ${getPlan(plan).name}`,
+        plan,
+        limit: maxBooks,
+        requested: requestedCount,
+      });
+    }
+  }
 
   // Prevent concurrent collection for same tenant
   if (collecting.has(tenantId)) {
@@ -1860,6 +1900,112 @@ function readDailyLog(tenantId, targetBook) {
     return targetBook ? entries.filter(e => e.book === targetBook) : entries;
   } catch (e) { return null; }
 }
+
+// ── Admin Middleware (checks tenant role) ──────────────────────────
+function adminAuth(req, res, next) {
+  if (!req.tenant || req.tenant.role !== "admin") {
+    return res.status(403).json({ code: 403, message: "需要管理员权限" });
+  }
+  next();
+}
+
+// ── Admin Routes ───────────────────────────────────────────────────
+
+// GET /api/v1/admin/overview — all tenants with plan + usage summary
+app.get("/api/v1/admin/overview", adminAuth, (req, res) => {
+  const tenants = loadTenants();
+  const todayUsage = getAllTenantsUsage();
+
+  const rows = [];
+  for (const [id, t] of Object.entries(tenants)) {
+    const plan = getPlan(t.plan || "trial");
+    const today = todayUsage[id] || { total: 0, endpoints: {} };
+    const monthly = getMonthlyUsage(id);
+    const limits = getPlanLimits(t.plan || "trial");
+
+    rows.push({
+      id,
+      name: t.name,
+      plan: t.plan || "trial",
+      planLabel: plan.name,
+      monthlyFee: plan.monthlyFee,
+      maxBooks: t.maxBooks || limits.maxBooks,
+      limits,
+      today: {
+        total: today.total,
+        collection: today.endpoints["POST /api/v1/collect"] || 0,
+        byEndpoint: today.endpoints,
+      },
+      month: {
+        total: monthly.total,
+        collection: monthly.endpoints["POST /api/v1/collect"] || 0,
+      },
+      collectionLimitReached: (today.endpoints["POST /api/v1/collect"] || 0) >= limits.maxCollectionsPerDay,
+    });
+  }
+
+  res.json({
+    code: 0,
+    data: {
+      tenants: rows,
+      totalMonthlyRevenue: rows.reduce((s, r) => s + r.monthlyFee, 0),
+      totalTodayCalls: rows.reduce((s, r) => s + r.today.total, 0),
+    },
+  });
+});
+
+// GET /api/v1/admin/usage?tenant=demo&days=7 — detailed usage for a tenant
+app.get("/api/v1/admin/usage", adminAuth, (req, res) => {
+  const tenantId = req.query.tenant;
+  const days = parseInt(req.query.days) || 7;
+
+  if (!tenantId) {
+    return res.status(400).json({ code: 400, message: "缺少 tenant 参数" });
+  }
+
+  const usageDir = path.join(DATA_DIR, ".usage");
+  const dailyBreakdown = [];
+
+  if (fs.existsSync(usageDir)) {
+    const files = fs.readdirSync(usageDir)
+      .filter(f => f.startsWith("usage-"))
+      .sort()
+      .reverse()
+      .slice(0, days);
+
+    for (const f of files) {
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(usageDir, f), "utf-8"));
+        const date = f.replace("usage-", "").replace(".json", "");
+        const t = data[tenantId];
+        dailyBreakdown.push({
+          date,
+          total: t?.total || 0,
+          endpoints: t?.endpoints || {},
+        });
+      } catch (e) { /* skip */ }
+    }
+  }
+
+  const tenant = loadTenants()[tenantId];
+  const monthly = getMonthlyUsage(tenantId);
+  const limits = getPlanLimits(tenant?.plan || "trial");
+
+  res.json({
+    code: 0,
+    data: {
+      tenant: tenantId,
+      plan: tenant?.plan || "trial",
+      limits,
+      monthly,
+      quotaUsed: {
+        apiCalls: Math.round(monthly.total / limits.maxApiCallsPerDay / 30 * 100) || 0,
+        collections: Math.round((monthly.endpoints["POST /api/v1/collect"] || 0) / limits.maxCollectionsPerDay / 30 * 100) || 0,
+      },
+      dailyBreakdown,
+    },
+  });
+});
 
 // ── 404 handler ──
 app.use((req, res) => {
