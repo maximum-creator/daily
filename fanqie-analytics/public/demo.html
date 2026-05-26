@@ -832,7 +832,7 @@ function renderDailyResult(d) {
   return `
     <div class="panel" style="margin-bottom:8px">
       <h3>📅 昨日数据快照 — ${d.book || ""}</h3>
-      <div style="font-size:13px;color:#888">采集时间：${(d.collectedAt || "").slice(0,16).replace("T"," ")} · 状态：${d.status || "未知"}</div>
+      <div style="font-size:13px;color:#888">采集时间：${fmtTime(d.collectedAt)} · 状态：${d.status || "未知"}</div>
     </div>
     <div class="kpi-grid">
       <div class="kpi-card"><div class="kpi-val">¥${d.revenue?.yesterday || 0}</div><div class="kpi-label">昨日收益 <span style="color:${d.revenue?.change >= 0 ? '#27ae60' : '#e74c3c'}">${d.revenue?.changeLabel || ""}</span></div></div>
@@ -948,11 +948,20 @@ function renderDashboard(a, ch, summary, bookName) {
   const f = (n, d) => n == null ? "--" : Number(n).toFixed(d || 0);
   const pct = n => n == null ? "--" : Number(n).toFixed(1) + "%";
   const cm = n => n == null ? "--" : Number(n).toLocaleString();
+  const fmtTime = (ts) => {
+    if (!ts) return "--";
+    if (ts.endsWith("Z")) {
+      const d = new Date(ts);
+      const p = (n) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+    return ts.slice(0, 16).replace("T", " ");
+  };
 
   // Info bar
   document.getElementById("dashBook").textContent = bookName;
   document.getElementById("dashTime").textContent =
-    "采集时间: " + (summary?.collectedAt || a.collectedAt || "").slice(0,16).replace("T"," ");
+    "采集时间: " + fmtTime(summary?.collectedAt || a.collectedAt);
   document.getElementById("dashStage").textContent =
     (a.stageLabel || a.stage || "").toUpperCase();
 
@@ -978,21 +987,26 @@ function renderDashboard(a, ch, summary, bookName) {
   const sectionLabel = { worksData: "阅读数据", revenue: "收益数据", traffic: "流量数据", quality: "质量数据" };
   const freshParts = [];
   let hasStale = false;
+  let knownCount = 0;
   for (const [section, label] of Object.entries(sectionLabel)) {
     const info = freshness[section];
     if (!info || info.updateTime == null) {
       freshParts.push(`<span class="freshness-dot fh-unknown">${label}：? 未知</span>`);
     } else if (info.stale) {
+      knownCount++;
       hasStale = true;
       freshParts.push(`<span class="freshness-dot fh-stale-confirmed">⚠ ${label}：${info.updateTime.slice(0,10)} 未更新</span>`);
     } else {
+      knownCount++;
       freshParts.push(`<span class="freshness-dot fh-fresh">✓ ${label}：已更新</span>`);
     }
   }
-  if (freshParts.length > 0) {
+  if (knownCount > 0) {
     const bar = document.getElementById("freshnessBar");
     bar.innerHTML = `<span class="fh-label">📡 数据新鲜度</span>` + freshParts.join("");
     bar.style.display = "flex";
+  } else {
+    document.getElementById("freshnessBar").style.display = "none";
   }
 
   // KPI
