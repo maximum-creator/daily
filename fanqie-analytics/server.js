@@ -1701,7 +1701,6 @@ app.get("/api/v1/analysis", (req, res) => {
 
   // ── Data Freshness: check if revenue/reading data is stale ──
   const freshness = latest.dataFreshness || {};
-  const todayStr = today();
   const staleSections = [];
   for (const [section, info] of Object.entries(freshness)) {
     if (info && info.stale) {

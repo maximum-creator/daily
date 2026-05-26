@@ -697,6 +697,15 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
       results.revenue = await collectRevenue(page);
     } catch (e) { /* skip */ }
     // Build minimal summary
+    // Revenue freshness even in fast mode
+    const fastRevDates = (results.revenue?.dailyRevenue || []).map(r => r.date).filter(Boolean).sort().reverse();
+    const fastFreshness = {};
+    if (freshness.worksData) fastFreshness.worksData = { updateTime: freshness.worksData, stale: freshness.worksData.slice(0,10) !== date };
+    if (fastRevDates.length > 0) {
+      const y = new Date(); y.setDate(y.getDate() - 1);
+      const yd = y.toISOString().slice(0, 10);
+      fastFreshness.revenue = { updateTime: fastRevDates[0], stale: fastRevDates[0] < yd };
+    }
     return {
       date,
       book: bookName, status: bookStatus,
@@ -705,6 +714,7 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
       quality: results.quality,
       traffic: null,
       revenue: results.revenue,
+      dataFreshness: fastFreshness,
     };
   }
 
