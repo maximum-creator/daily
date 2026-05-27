@@ -19,6 +19,7 @@ const { getPage, releasePage, hasProfile, markProfileReady, PROFILES_DIR } = req
 const { collectDashboard, collectForBook, saveCollection, switchToBook, jsClick, today } = require("./lib/collector");
 const { usageTracker, getTodayUsage, getMonthlyUsage, getAllTenantsUsage, getTodayCollectionCount } = require("./lib/usage-tracker");
 const { getPlan, getPlanLimits } = require("./lib/plans");
+const { generateCategoryReport, CATEGORIES: BENCH_CATEGORIES } = require("./lib/benchmarks");
 const { startScheduler } = require("./lib/scheduler");
 
 const app = express();
@@ -26,7 +27,7 @@ const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, "data");
 
 // ── Global middleware ─────────────────────────────────────────────
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 app.use(morgan("combined")); // Standard Apache combined log format
 
 // Global rate limit: 100 req/min per IP
@@ -301,6 +302,46 @@ app.get("/api/v1/books", (req, res) => {
   res.json({ code: 0, data: Array.from(booksMap.values()) });
 });
 
+// ── Book category helpers ──
+function readBookCategories(tenantId) {
+  const catPath = path.join(DATA_DIR, tenantId, "book-categories.json");
+  if (!fs.existsSync(catPath)) return {};
+  try { return JSON.parse(fs.readFileSync(catPath, "utf-8")); } catch (e) { return {}; }
+}
+function writeBookCategories(tenantId, cats) {
+  const dir = path.join(DATA_DIR, tenantId);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const catPath = path.join(dir, "book-categories.json");
+  fs.writeFileSync(catPath, JSON.stringify(cats, null, 2));
+}
+
+// ── GET /api/v1/books/categories — 获取所有作品的品类设置 ──
+app.get("/api/v1/books/categories", (req, res) => {
+  const tenantId = req.tenant.id;
+  const cats = readBookCategories(tenantId);
+  // Return with available category options
+  const options = Object.entries(BENCH_CATEGORIES).map(([key, cat]) => ({
+    key, label: cat.label,
+  }));
+  res.json({ code: 0, data: { categories: cats, options } });
+});
+
+// ── POST /api/v1/books/categories — 设置作品的品类 ──
+app.post("/api/v1/books/categories", (req, res) => {
+  const tenantId = req.tenant.id;
+  const { book, category } = req.body || {};
+  if (!book || !category) {
+    return res.json({ code: 400, message: "缺少 book 或 category 参数" });
+  }
+  if (!BENCH_CATEGORIES[category]) {
+    return res.json({ code: 400, message: `无效品类: ${category}，可选值: ${Object.keys(BENCH_CATEGORIES).join(", ")}` });
+  }
+  const cats = readBookCategories(tenantId);
+  cats[book] = category;
+  writeBookCategories(tenantId, cats);
+  res.json({ code: 0, data: { book, category }, message: "品类已保存" });
+});
+
 // ── POST /api/v1/books/scan — 快速扫描作品列表（不采集数据）──
 app.post("/api/v1/books/scan", collectLimiter, async (req, res) => {
   const tenantId = req.tenant.id;
@@ -366,7 +407,8 @@ app.post("/api/v1/collect", collectLimiter, async (req, res) => {
   const todayDir = path.join(DATA_DIR, tenantId, todayStr);
   const force = req.query.force === "true" || req.query.force === "1";
   const booksParam = req.query.books || ""; // comma-separated book names to filter
-  const fastMode = req.query.fast === "true" || req.query.fast === "1";
+  // Note: "快速采集" mode removed from UI (user said no difference).
+  // Internal fastMode is still used for incremental update path in runCollection.
 
   // 时间策略：中午12点前数据平台通常未更新，保留缓存；
   // 12点后平台已更新，始终强制重采（数据可能延后到13点）
@@ -456,7 +498,7 @@ app.post("/api/v1/collect", collectLimiter, async (req, res) => {
   res.json({ code: 0, data: { async: true, taskId: tenantId }, message: "采集已启动" });
 
   // Run collection in background
-  runCollection(tenantId, force, todayStr, todayDir, progress, booksParam, fastMode);
+  runCollection(tenantId, force, todayStr, todayDir, progress, booksParam, false);
 });
 
 // Background collection runner — updates progress map at each step
@@ -1058,8 +1100,8 @@ app.get("/api/v1/analysis", (req, res) => {
     !isSigned &&
     !isFinished &&
     !isRecommendation &&
-    daysSinceFirstPublish <= 14 &&
-    (explicitVerification || searchRatio > 0.5 || daysSinceFirstPublish <= 10)
+    daysSinceFirstPublish <= 10 &&
+    (explicitVerification || searchRatio > 0.5 || daysSinceFirstPublish <= 7)
   );
 
   const stage = isFinished ? "finished"
@@ -1325,12 +1367,12 @@ app.get("/api/v1/analysis", (req, res) => {
       detail: `你的书当前处于「未签约」状态。番茄对新书的流程是：稳定更新→达到字数门槛（约2-3万字）→触发验证期（平台小范围推流测试7-10天）→核心指标达标→签约。${wordCountHint}未签约阶段数据量少是非常正常的，无需焦虑——现在最重要的不是数据，而是稳定日更。`,
     });
 
-    if (latestWords >= 20000 && daysSinceFirstPublish > 14) {
+    if (latestWords >= 20000 && daysSinceFirstPublish > 10) {
       suggestions.push({
         priority: "medium",
         category: "platform",
         title: "字数达标但未进入验证期 — 自查清单",
-        detail: "已满足2万字门槛但超过14天未触发验证，建议检查：①最近7天是否每天都有更新？（断更2天会降低优先级）②书名和简介是否踩了敏感词？（含「系统」「金手指」「穿越」等是正常的，但要避免涉政涉黄）③如果都没有问题，可以给编辑投稿自荐，主动申请验证。④考虑调整书名/简介：在番茄，书名的「卖点清晰度」比「文艺感」重要得多——读者3秒扫过书名，必须一眼知道「这本书讲什么」。",
+        detail: "已满足2万字门槛但超过10天未触发验证（平台验证期通常7-10天），建议检查：①最近7天是否每天都有更新？（断更2天会降低优先级）②书名和简介是否踩了敏感词？（含「系统」「金手指」「穿越」等是正常的，但要避免涉政涉黄）③如果都没有问题，可以给编辑投稿自荐，主动申请验证。④考虑调整书名/简介：在番茄，书名的「卖点清晰度」比「文艺感」重要得多——读者3秒扫过书名，必须一眼知道「这本书讲什么」。",
       });
     }
 
@@ -1808,6 +1850,127 @@ app.get("/api/v1/analysis", (req, res) => {
     }
   }
 
+  // ── Week-over-Week Growth ──
+  const weekAvg = (arr, fn) => {
+    const vals = arr.map(fn).filter(v => v != null && v > 0);
+    return vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+  };
+  const recent14 = log.slice(-14);
+  const thisWeekLog = recent14.slice(-7);
+  const lastWeekLog = recent14.slice(0, Math.max(0, recent14.length - 7));
+  const completionExtractor = (e) => {
+    const chs = e.quality?.chapters || [];
+    const rts = chs.map(c => c.completionRate).filter(r => r > 0);
+    return rts.length > 0 ? rts.reduce((a, b) => a + b, 0) / rts.length : 0;
+  };
+  const followExtractor = (e) => {
+    const chs = e.quality?.chapters || [];
+    const rts = chs.map(c => c.followReadRate).filter(r => r > 0);
+    return rts.length > 0 ? rts.reduce((a, b) => a + b, 0) / rts.length : 0;
+  };
+  const wowMetrics = {
+    revenue: { label: "日均收益", unit: "¥", thisWeek: weekAvg(thisWeekLog, e => e.revenue?.overview?.yesterdayRevenue || 0), lastWeek: weekAvg(lastWeekLog, e => e.revenue?.overview?.yesterdayRevenue || 0) },
+    readers: { label: "日均读者", unit: "人", thisWeek: weekAvg(thisWeekLog, e => e.worksData?.["阅读人数"] || 0), lastWeek: weekAvg(lastWeekLog, e => e.worksData?.["阅读人数"] || 0) },
+    completion: { label: "平均读完率", unit: "%", thisWeek: weekAvg(thisWeekLog, completionExtractor), lastWeek: weekAvg(lastWeekLog, completionExtractor) },
+    follow: { label: "平均追读率", unit: "%", thisWeek: weekAvg(thisWeekLog, followExtractor), lastWeek: weekAvg(lastWeekLog, followExtractor) },
+  };
+  for (const [key, m] of Object.entries(wowMetrics)) {
+    m.growth = m.lastWeek > 0 ? Math.round((m.thisWeek - m.lastWeek) / m.lastWeek * 100) : (m.thisWeek > 0 ? 100 : 0);
+    m.trend = m.growth > 5 ? "up" : m.growth < -5 ? "down" : "flat";
+    m.thisWeek = Math.round(m.thisWeek * 10) / 10;
+    m.lastWeek = Math.round(m.lastWeek * 10) / 10;
+  }
+  const weekOverWeek = {
+    metrics: wowMetrics,
+    thisWeekRange: thisWeekLog.length > 0 ? { start: thisWeekLog[0]?.date, end: thisWeekLog[thisWeekLog.length - 1]?.date } : null,
+    lastWeekRange: lastWeekLog.length > 0 ? { start: lastWeekLog[0]?.date, end: lastWeekLog[lastWeekLog.length - 1]?.date } : null,
+    hasComparison: lastWeekLog.length >= 2,
+  };
+
+  // ── Chapter Diagnosis: Best & Worst ──
+  const chWithData = mergedChapters.filter(c => c.completionRate > 0 || c.followReadRate > 0);
+  const bestCompletion = [...chWithData].filter(c => c.completionRate > 0 && c.chapter !== 1).sort((a, b) => b.completionRate - a.completionRate).slice(0, 3);
+  const bestFollow = [...chWithData].filter(c => c.followReadRate > 0).sort((a, b) => b.followReadRate - a.followReadRate).slice(0, 3);
+  // Worst retention: biggest completion rate drops between consecutive chapters
+  const retentionDrops = [];
+  for (let i = 1; i < completionCurve.length; i++) {
+    const prev = completionCurve[i - 1];
+    const curr = completionCurve[i];
+    if (prev.completionRate > 0 && curr.completionRate > 0) {
+      const drop = prev.completionRate - curr.completionRate;
+      if (drop > 0) retentionDrops.push({ fromChapter: prev.chapter, fromTitle: prev.title, toChapter: curr.chapter, toTitle: curr.title, drop: Math.round(drop * 10) / 10 });
+    }
+  }
+  retentionDrops.sort((a, b) => b.drop - a.drop);
+  const worstRetention = retentionDrops.slice(0, 3);
+  const chapterDiagnosis = {
+    bestCompletion: bestCompletion.map(c => ({ chapter: c.chapter, title: c.title || "", completionRate: c.completionRate, followReadRate: c.followReadRate || 0, wordCount: c.wordCount || 0 })),
+    bestFollow: bestFollow.map(c => ({ chapter: c.chapter, title: c.title || "", completionRate: c.completionRate || 0, followReadRate: c.followReadRate, wordCount: c.wordCount || 0 })),
+    worstRetention,
+  };
+
+  // ── Top 3 Action Items ──
+  // Distill the most impactful, specific actions from the full suggestion list
+  const actionItems = [];
+  // Priority 1: biggest drop point
+  if (biggestDrop && biggestDrop.drop > 5) {
+    actionItems.push({
+      rank: 1, icon: "🎯", title: `修复第${biggestDrop.to.chapter}章读者流失点`,
+      detail: `第${biggestDrop.from.chapter}章→第${biggestDrop.to.chapter}章读完率暴跌 ${biggestDrop.drop}%。建议：①重写第${biggestDrop.to.chapter}章开头300字，确保承接上一章的悬念 ②该章结尾添加明确钩子引导读者点击下一章`,
+      impact: "high",
+    });
+  }
+  // Priority 2: worst completion rate
+  if (avgCompletion < 20 && stage !== "unsigned") {
+    actionItems.push({
+      rank: actionItems.length + 1, icon: "📉", title: `提升整体读完率（当前 ${avgCompletion}%，目标 ≥30%）`,
+      detail: `读完率是番茄算法最核心的指标。建议：①前3章压缩背景介绍，第一章末必须建立主角目标 ②每章控制在3000-5000字 ③章末统一添加"钩子句式"（如"但他不知道的是…"），${bestCompletion.length > 0 ? `参考表现最好的第${bestCompletion[0].chapter}章（读完率 ${bestCompletion[0].completionRate}%）的写法` : ""}`,
+      impact: "high",
+    });
+  }
+  // Priority 3: search ratio or engagement
+  if (searchRatio > 0.6 && stage !== "unsigned") {
+    actionItems.push({
+      rank: actionItems.length + 1, icon: "🔍", title: `降低搜索依赖（当前搜索占比 ${Math.round(searchRatio * 100)}%）`,
+      detail: "搜索占比高说明平台推荐流量不足。提升追读率和加书架率是关键——在「作者的话」中引导读者加书架，每章末尾设置明确的次日预告。连续7天稳定日更可触发算法重新评估。",
+      impact: "high",
+    });
+  }
+  // If we still need items, add based on update consistency
+  if (actionItems.length < 3 && updateScore < 70) {
+    actionItems.push({
+      rank: actionItems.length + 1, icon: "📅", title: `建立稳定更新节奏（当前得分 ${updateScore}/100）`,
+      detail: "建议固定每天同一时间段更新（如每晚8点），连续7天不中断。番茄算法对更新稳定性极其敏感——断更2天以上会直接降权，恢复需要连续更新1周以上。",
+      impact: "medium",
+    });
+  }
+  // Fill remaining with pacing advice
+  if (actionItems.length < 3 && pacing.chapterWordAvg > 0) {
+    actionItems.push({
+      rank: actionItems.length + 1, icon: "✂️", title: `优化章节长度一致性（当前波动 ±${pacing.wordStdDev}字）`,
+      detail: `平均单章 ${pacing.chapterWordAvg} 字，建议控制在3000-5000字甜区。${pacing.wordCompletionCorrelation != null && pacing.wordCompletionCorrelation < -0.2 ? "数据显示字数越多读完率越低，考虑拆分过长章节。" : ""}过于悬殊的章节字数会打乱读者阅读节奏。`,
+      impact: "medium",
+    });
+  }
+  // If still empty, add a generic but positive item
+  if (actionItems.length === 0) {
+    actionItems.push({
+      rank: 1, icon: "✅", title: "保持当前更新节奏和数据监控",
+      detail: "当前各项指标在健康范围内。建议每周至少查看一次完整分析报告，关注读完率趋势变化。持续日更、保持章节质量稳定是维持平台推荐权重的关键。",
+      impact: "info",
+    });
+  }
+  // Pad to exactly 3 if we have 1-2 items
+  const padItems = [
+    { icon: "📊", title: "每周对比数据，追踪趋势变化", detail: "定期查看周环比增长卡片，关注读完率和追读率的方向性变化。趋势比绝对值更重要——上升趋势即使数值低也是好信号。", impact: "info" },
+    { icon: "📝", title: "保持章末悬念钩子", detail: "每章结尾设置明确的「下一章预告」或悬念钩子（如反转、新角色登场、危机信号），这是提升追读率最简单有效的方法。", impact: "info" },
+    { icon: "🔖", title: "引导读者加书架", detail: "在「作者的话」中温和地提醒读者加书架——加书架率直接影响平台的推荐权重计算。建议在前3章和最新章节的作者话中引导。", impact: "info" },
+  ];
+  while (actionItems.length < 3) {
+    const pad = padItems[actionItems.length];
+    if (pad) actionItems.push({ rank: actionItems.length + 1, ...pad });
+  }
+
   const responseData = {
     book: bookName,
     status,
@@ -1850,8 +2013,28 @@ app.get("/api/v1/analysis", (req, res) => {
       benchmarks,
     },
     suggestions,
+    weekOverWeek,
+    chapterDiagnosis,
+    actionItems,
     dataFreshness: freshness,
   };
+
+  // ── Category Benchmark Report ──
+  const bookCats = readBookCategories(tenantId);
+  const bookCategory = bookCats[bookName] || "";
+  if (bookCategory && BENCH_CATEGORIES[bookCategory]) {
+    responseData.categoryReport = generateCategoryReport({
+      completion: avgCompletion,
+      follow: avgFollow,
+      searchRatio: Math.round(searchRatio * 100),
+      bookmarkRate: funnel.bookmarkRate || 0,
+      revenuePerKWord: latestWords > 0 ? Math.round(totalRevenue / (latestWords / 1000) * 1000) / 1000 : 0,
+      totalWords: latestWords,
+    }, bookCategory);
+  } else {
+    responseData.categoryReport = { available: false, message: "未设置品类", options: Object.entries(BENCH_CATEGORIES).map(([key, cat]) => ({ key, label: cat.label })) };
+  }
+
   res.json({ code: 0, data: responseData });
 });
 

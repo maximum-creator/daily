@@ -21,9 +21,16 @@ function usagePath(date) {
 }
 
 function flush() {
+  // Snapshot buffer keys BEFORE I/O — new entries may arrive during file writes
+  const dates = Object.keys(buffer);
+  if (dates.length === 0) return;
+
   if (!fs.existsSync(USAGE_DIR)) fs.mkdirSync(USAGE_DIR, { recursive: true });
 
-  for (const [date, tenants] of Object.entries(buffer)) {
+  for (const date of dates) {
+    const tenants = buffer[date];
+    if (!tenants) continue;
+
     const fp = usagePath(date);
     let existing = {};
     if (fs.existsSync(fp)) {
@@ -40,8 +47,8 @@ function flush() {
     fs.writeFileSync(fp, JSON.stringify(existing, null, 2));
   }
 
-  // Clear flushed entries from buffer
-  for (const date of Object.keys(buffer)) delete buffer[date];
+  // Delete only dates we snapshotted — ignore entries that arrived during I/O
+  for (const date of dates) delete buffer[date];
 }
 
 // Auto-flush every 30s

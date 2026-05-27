@@ -254,7 +254,10 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
       <span class="dot"></span>
       <span>实时数据 · <strong id="dashBook"></strong> · <span id="dashTime"></span></span>
       <span style="margin-left:auto;font-size:12px" id="dashStage"></span>
-      <div style="display:flex;gap:6px;margin-left:8px" id="quickBtns">
+      <select id="categorySelect" onchange="onCategoryChange()" style="padding:3px 8px;border:1px solid #ddd;border-radius:6px;font-size:11px;background:#fff;margin-left:6px;display:none">
+        <option value="">未设置品类</option>
+      </select>
+      <div style="display:flex;gap:6px;margin-left:6px" id="quickBtns">
         <button onclick="quickAnalysis('weekly')" style="padding:4px 10px;border:1px solid #ddd;border-radius:6px;background:#fff;cursor:pointer;font-size:12px">📊 近七日评估</button>
         <button onclick="quickAnalysis('full')" style="padding:4px 10px;border:1px solid #667eea;border-radius:6px;background:#667eea;color:#fff;cursor:pointer;font-size:12px">🔬 完整分析</button>
       </div>
@@ -263,7 +266,9 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
     <div id="quickResult" style="display:none;margin-bottom:12px"></div>
 
     <div id="stageBanner"></div>
+    <div id="actionItems"></div>
     <div class="kpi-grid" id="kpiRow"></div>
+    <div id="wowRow"></div>
 
     <div class="col2">
       <div>
@@ -285,6 +290,7 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
           <h3>⚠️ 章节异常检测</h3>
           <div id="anomalies"></div>
         </div>
+        <div id="chapterDiagnosis"></div>
       </div>
     </div>
 
@@ -312,6 +318,8 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
         <div id="benchmarkVis"></div>
       </div>
     </div>
+
+    <div id="categoryPanel"></div>
 
     <div class="back-bar">
       <button class="btn-back" onclick="goBack()">↺ 返回 · 重新选择书籍</button>
@@ -1019,6 +1027,9 @@ function renderDashboard(a, ch, summary, bookName) {
   document.getElementById("entryArea").style.display = "none";
   document.getElementById("dashboard").classList.add("active");
 
+  // Populate category dropdown
+  populateCategoryOptions(bookName);
+
   const q = a.analysis || {};
   // /analysis nests data under a.analysis; /summary has top-level traffic + quality.cumulativeWords
   const quality = q.quality || {};
@@ -1070,6 +1081,9 @@ function renderDashboard(a, ch, summary, bookName) {
         <div style="font-size:12px;opacity:0.7;margin-top:2px">首发 ${a.daysSinceFirstPublish||"?"} 天 · 数据覆盖 ${q.dataDays||0} 天 · 日均 ${cm(q.avgDailyWords||0)} 字</div>
       </div>
     </div>`;
+
+  // ── Action Items ──
+  document.getElementById("actionItems").innerHTML = renderActionItems(a.actionItems);
 
   // ── Platform Staleness Warning ──
   if (a._platformStale) {
@@ -1126,6 +1140,9 @@ function renderDashboard(a, ch, summary, bookName) {
     <div class="kpi-card"><div class="val c-blue">${cm(totalWords)}</div><div class="lbl">累计字数</div><div class="sub">千字收益 ¥${f(rpm,3)}</div></div>
     <div class="kpi-card"><div class="val ${updateScore<60?'c-red':updateScore<90?'c-orange':'c-green'}">${updateScore}分</div><div class="lbl">更新一致性</div><div class="sub">${updateScore>=90?'稳定日更':updateScore>=60?'偶有断更':'频繁断更 ⚠'}</div></div>`;
 
+  // Week-over-week growth
+  document.getElementById("wowRow").innerHTML = renderWeekOverWeek(a.weekOverWeek);
+
   // Traffic
   const sources = summary?.traffic || traf.raw || {};
   const total = Object.values(sources).reduce((x,y) => x+y, 0);
@@ -1175,6 +1192,9 @@ function renderDashboard(a, ch, summary, bookName) {
   } else {
     document.getElementById("anomalies").innerHTML = `<div class="empty-note">未检测到异常章节</div>`;
   }
+
+  // Chapter diagnosis
+  document.getElementById("chapterDiagnosis").innerHTML = renderChapterDiagnosis(a.chapterDiagnosis);
 
   // Retention
   const early = quality.earlyRetention, mid = quality.midRetention, late = quality.lateRetention;
@@ -1285,6 +1305,9 @@ function renderDashboard(a, ch, summary, bookName) {
     </div>
   `;
 
+  // Category benchmark panel
+  document.getElementById("categoryPanel").innerHTML = renderCategoryPanel(a.categoryReport);
+
   window.scrollTo({top:0,behavior:"smooth"});
 }
 
@@ -1328,6 +1351,185 @@ function renderCurvePaginator(current, total) {
     </div>`;
 }
 
+// ── Category Benchmark ──
+async function populateCategoryOptions(bookName) {
+  const sel = document.getElementById("categorySelect");
+  try {
+    const r = await fetch(API + "/books/categories", {
+      headers: { Authorization: AUTH }
+    });
+    const j = await r.json();
+    if (j.code !== 0 || !j.data) return;
+
+    const { categories, options } = j.data;
+    sel.innerHTML = '<option value="">未设置品类</option>' +
+      (options || []).map(o => `<option value="${o.key}">${o.label}</option>`).join("");
+
+    if (bookName && categories && categories[bookName]) {
+      sel.value = categories[bookName];
+    }
+    sel.style.display = "inline-block";
+  } catch (e) { /* best-effort */ }
+}
+
+async function onCategoryChange() {
+  const book = _dashBookName || document.getElementById("bookSelect").value;
+  const category = document.getElementById("categorySelect").value;
+  if (!book) return;
+
+  try {
+    await fetch(API + "/books/categories", {
+      method: "POST",
+      headers: { Authorization: AUTH, "Content-Type": "application/json" },
+      body: JSON.stringify({ book, category })
+    });
+  } catch (e) { /* continue */ }
+
+  // Re-run analysis to refresh category report
+  startAnalysis();
+}
+
+function renderCategoryPanel(cr) {
+  if (!cr || !cr.available) {
+    return `<div class="panel" style="margin-bottom:16px">
+      <h3>📊 品类竞品对标</h3>
+      <div style="text-align:center;padding:16px;color:#888;font-size:13px">
+        ${cr?.message || "未设置品类"} — 请在顶部下拉菜单选择作品的品类（都市/玄幻/言情等），即可查看在同品类中的竞争力排名
+      </div>
+    </div>`;
+  }
+
+  const pctColor = (p) => {
+    if (p >= 80) return "#27ae60";
+    if (p >= 50) return "#667eea";
+    if (p >= 30) return "#e67e22";
+    return "#e74c3c";
+  };
+  const pctLabel = (p) => {
+    if (p >= 80) return "优秀";
+    if (p >= 50) return "良好";
+    if (p >= 30) return "一般";
+    return "待提升";
+  };
+
+  const metrics = [
+    { key: "completion", label: "读完率", pct: cr.percentiles.completion },
+    { key: "follow", label: "追读率", pct: cr.percentiles.follow },
+    { key: "searchRatio", label: "搜索占比", pct: cr.percentiles.searchRatio, lowerBetter: true },
+    { key: "bookmarkRate", label: "加书架率", pct: cr.percentiles.bookmarkRate },
+  ];
+
+  const nextHint = cr.nextRange
+    ? `<div style="margin-top:12px;padding:10px 14px;background:#f0f4ff;border-radius:8px;font-size:12px;color:#667eea">
+        📈 下一阶段目标（${cr.nextRange.range}）：读完率 ≥${cr.nextRange.benchmarks.completion}% · 追读率 ≥${cr.nextRange.benchmarks.follow}% · 搜索占比 ≤${cr.nextRange.benchmarks.searchRatioMax}% · 加书架率 ≥${cr.nextRange.benchmarks.bookmarkRate}%
+      </div>`
+    : "";
+
+  return `<div class="panel" style="margin-bottom:16px">
+    <h3>📊 品类竞品对标 — ${cr.categoryLabel} · ${cr.rangeLabel}</h3>
+    <div style="display:flex;align-items:center;gap:16px;margin-bottom:16px;flex-wrap:wrap">
+      <div style="text-align:center;min-width:80px">
+        <div style="font-size:36px;font-weight:700;color:${pctColor(cr.overallPercentile)}">${cr.overallPercentile}</div>
+        <div style="font-size:11px;color:#888">综合百分位</div>
+        <div style="font-size:12px;font-weight:600;color:${pctColor(cr.overallPercentile)};margin-top:2px">${pctLabel(cr.overallPercentile)}</div>
+      </div>
+      <div style="flex:1;min-width:250px">
+        ${metrics.map(m => {
+          const color = pctColor(m.pct);
+          return `<div style="margin:6px 0">
+            <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px">
+              <span style="color:#666">${m.label}${m.lowerBetter ? '（越低越好）' : ''}</span>
+              <span style="font-weight:700;color:${color}">${m.pct}分 · ${pctLabel(m.pct)}</span>
+            </div>
+            <div style="height:8px;background:#e8ecf1;border-radius:4px;overflow:hidden">
+              <div style="height:100%;width:${m.pct}%;background:${color};border-radius:4px;transition:width .8s cubic-bezier(0.4,0,0.2,1)"></div>
+            </div>
+          </div>`;
+        }).join("")}
+      </div>
+    </div>
+    <div style="display:flex;gap:12px;font-size:12px;flex-wrap:wrap">
+      <span style="padding:4px 12px;background:#e8f5e9;color:#2e7d32;border-radius:12px">✅ 优势：${(cr.strengths || []).join("、") || "—"}</span>
+      <span style="padding:4px 12px;background:#fce4e4;color:#c0392b;border-radius:12px">⚠ 短板：${(cr.weaknesses || []).join("、") || "—"}</span>
+    </div>
+    ${nextHint}
+  </div>`;
+}
+
+function renderWeekOverWeek(wow) {
+  if (!wow || !wow.hasComparison || !wow.metrics) return "";
+  const m = wow.metrics;
+  const icon = { up: "↑", down: "↓", flat: "→" };
+  const clr = { up: "#27ae60", down: "#e74c3c", flat: "#888" };
+  const keys = ["revenue", "readers", "completion", "follow"];
+  return `<div class="kpi-grid" style="margin-bottom:6px;grid-template-columns:repeat(4,1fr)">
+    ${keys.map(k => {
+      const v = m[k];
+      if (!v) return "";
+      const prefix = v.unit === "¥" ? "¥" : "";
+      const suffix = v.unit === "%" ? "%" : "";
+      return `<div class="kpi-card" style="padding:10px 14px">
+        <div style="font-size:11px;color:#888;margin-bottom:2px">${v.label}</div>
+        <div style="font-size:18px;font-weight:700">${prefix}${v.thisWeek}${suffix}</div>
+        <div style="font-size:11px;color:${clr[v.trend]};margin-top:2px">${icon[v.trend]} ${v.growth >= 0 ? '+' : ''}${v.growth}% vs 上周</div>
+      </div>`;
+    }).join("")}
+  </div>`;
+}
+
+function renderChapterDiagnosis(cd) {
+  if (!cd) return "";
+  const { bestCompletion, bestFollow, worstRetention } = cd;
+  let html = '<div class="panel" style="margin-top:14px"><h3>🔬 章节诊断</h3>';
+
+  if (bestCompletion && bestCompletion.length > 0) {
+    html += '<div style="font-size:11px;font-weight:600;color:#27ae60;margin-bottom:3px">✅ 读完率最高章</div>';
+    html += bestCompletion.map(c =>
+      `<div style="font-size:11px;padding:2px 0;color:#555">Ch.${c.chapter}「${escHtml(c.title)}」完成率 <b style="color:#27ae60">${c.completionRate}%</b></div>`
+    ).join("");
+  }
+
+  if (bestFollow && bestFollow.length > 0) {
+    html += '<div style="font-size:11px;font-weight:600;color:#667eea;margin:6px 0 3px">🔥 追读率最高章</div>';
+    html += bestFollow.map(c =>
+      `<div style="font-size:11px;padding:2px 0;color:#555">Ch.${c.chapter}「${escHtml(c.title)}」追读率 <b style="color:#667eea">${c.followReadRate}%</b></div>`
+    ).join("");
+  }
+
+  if (worstRetention && worstRetention.length > 0) {
+    html += '<div style="font-size:12px;font-weight:600;color:#e74c3c;margin:8px 0 4px">⚠ 流失最严重 TOP 3</div>';
+    html += worstRetention.map(d =>
+      `<div style="font-size:12px;padding:3px 0;color:#555">第${d.fromChapter}→${d.toChapter}章 — 读完率跌 <b style="color:#e74c3c">${d.drop}%</b></div>`
+    ).join("");
+  }
+
+  html += '</div>';
+  return html;
+}
+
+function renderActionItems(items) {
+  if (!items || items.length === 0) return "";
+  const impactBadge = {
+    high: "background:#fce4e4;color:#c0392b",
+    medium: "background:#fef9e7;color:#b8730a",
+    info: "background:#eaf2f8;color:#1a5276"
+  };
+  const impactLabel = { high: "高优先级", medium: "中优先级", info: "建议" };
+  return `<div class="panel" style="margin-bottom:18px;background:linear-gradient(135deg,#f8f9ff,#f0f3ff);border:1px solid #e0e4f0">
+    <h3 style="border-bottom-color:#667eea">📋 本周 Top ${items.length} 可操作任务</h3>
+    ${items.map(item => `
+      <div style="display:flex;gap:12px;padding:12px 0;border-bottom:1px solid #eef;align-items:flex-start">
+        <span style="font-size:24px;flex-shrink:0">${item.icon}</span>
+        <div style="flex:1">
+          <div style="font-weight:700;font-size:14px;color:#1a1a2e">#${item.rank} ${item.title}</div>
+          <div style="font-size:12px;color:#666;margin-top:4px;line-height:1.6">${item.detail}</div>
+        </div>
+        <span style="padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;flex-shrink:0;${impactBadge[item.impact] || impactBadge.info}">${impactLabel[item.impact] || "建议"}</span>
+      </div>
+    `).join("")}
+  </div>`;
+}
+
 function goBack() {
   document.getElementById("dashboard").classList.remove("active");
   document.getElementById("entryArea").style.display = "block";
@@ -1335,6 +1537,7 @@ function goBack() {
   document.getElementById("quickResult").innerHTML = "";
   document.getElementById("freshnessBar").style.display = "none";
   document.getElementById("freshnessBar").innerHTML = "";
+  document.getElementById("categorySelect").style.display = "none";
   const hasVal = !!document.getElementById("bookSelect").value;
   document.getElementById("analyzeBtn").disabled = !hasVal;
   document.getElementById("weeklyBtn").disabled = !hasVal;

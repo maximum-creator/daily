@@ -29,10 +29,12 @@ const PLANS = {
   enterprise: {
     name: "企业版",
     monthlyFee: 999,
-    maxBooks: 999,
-    maxCollectionsPerDay: 999,
-    maxApiCallsPerDay: 99999,
+    maxBooks: Infinity,
+    maxCollectionsPerDay: Infinity,
+    maxApiCallsPerDay: Infinity,
     maxDataDays: 365,
+    whiteLabel: true,
+    sla: true,
   },
 };
 

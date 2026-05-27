@@ -66,7 +66,7 @@ function releasePage(tenantId, page) {
   if (!entry) return;
 
   page.close().catch(() => {});
-  entry.pageCount--;
+  if (entry.pageCount > 0) entry.pageCount--;
   entry.busy = false;
 }
 
@@ -96,5 +96,8 @@ function markProfileReady(tenantId) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, ".profile-ready"), new Date().toISOString());
 }
+
+process.on("SIGTERM", () => { closeAll(); process.exit(); });
+process.on("SIGINT", () => { closeAll(); process.exit(); });
 
 module.exports = { getPage, releasePage, closeTenant, closeAll, hasProfile, markProfileReady, PROFILES_DIR };
