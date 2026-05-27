@@ -573,6 +573,7 @@ async function scanBooks() {
 
 async function oneClickRefresh() {
   const btn = document.getElementById("refreshBtn");
+  if (btn.disabled) return; // guard against double-click
   btn.disabled = true;
   btn.textContent = "⏳ 扫描中…";
 
@@ -583,16 +584,14 @@ async function oneClickRefresh() {
   document.getElementById("preCollectCard").style.display = "block";
   document.getElementById("scanBooksBtn").style.display = "block";
   document.getElementById("startCollectBtn").style.display = "none";
-  document.getElementById("scanBooksBtn").disabled = false;
-  document.getElementById("scanBooksBtn").textContent = "🔍 扫描作品列表";
   document.getElementById("bookCheckList").innerHTML = "";
-  document.getElementById("preCollectHint").textContent = "点击扫描获取番茄后台作品列表（约5秒）";
+  document.getElementById("preCollectHint").textContent = "正在连接番茄后台…";
+
+  // scanBooks manages its own button (scanBooksBtn); wait for it to finish
+  await scanBooks();
 
   btn.textContent = "🔄 一键刷新数据";
   btn.disabled = false;
-
-  // Trigger scan (user can then pick books and collect manually)
-  scanBooks();
 }
 
 function renderBookChecklist() {
@@ -845,12 +844,17 @@ function updateBookDataAge() {
   const el = document.getElementById("bookDataAge");
   if (!date) { el.innerHTML = ''; return; }
 
-  const d = new Date(date);
   const now = new Date();
+  const todayStr = now.getFullYear() + '-' +
+    String(now.getMonth() + 1).padStart(2, '0') + '-' +
+    String(now.getDate()).padStart(2, '0');
+
+  // Parse date as local (not UTC) for diff calculation
+  const parts = date.split('-');
+  const d = new Date(+parts[0], +parts[1] - 1, +parts[2]); // local midnight
   const diffMs = now - d;
   const diffHours = Math.floor(diffMs / 3600000);
   const diffDays = Math.floor(diffMs / 86400000);
-  const todayStr = now.toISOString().slice(0, 10);
 
   let color, label;
   if (date === todayStr) {
