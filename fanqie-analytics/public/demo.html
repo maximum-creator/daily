@@ -563,9 +563,7 @@ async function scanBooks() {
     updateSelectedCount();
     btn.style.display = "none";
     document.getElementById("startCollectBtn").style.display = "block";
-    document.getElementById("preCollectHint").textContent = `已扫描 ${scannedBooks.length} 部作品，自动开始采集…`;
-    // P2: Auto-collect after scan — save user one click
-    startCollection();
+    document.getElementById("preCollectHint").textContent = `已扫描 ${scannedBooks.length} 部作品，请勾选要采集的（默认全选）`;
   } catch (e) {
     document.getElementById("preCollectHint").textContent = `网络错误：${e.message}`;
     btn.textContent = "🔍 重新扫描";
@@ -585,38 +583,16 @@ async function oneClickRefresh() {
   document.getElementById("preCollectCard").style.display = "block";
   document.getElementById("scanBooksBtn").style.display = "block";
   document.getElementById("startCollectBtn").style.display = "none";
+  document.getElementById("scanBooksBtn").disabled = false;
+  document.getElementById("scanBooksBtn").textContent = "🔍 扫描作品列表";
+  document.getElementById("bookCheckList").innerHTML = "";
+  document.getElementById("preCollectHint").textContent = "点击扫描获取番茄后台作品列表（约5秒）";
 
-  try {
-    const r = await fetch(API + "/books/scan", {
-      method: "POST",
-      headers: { Authorization: AUTH, "Content-Type": "application/json" }
-    });
-    const j = await r.json();
-    if (j.code !== 0) {
-      document.getElementById("preCollectHint").textContent = `刷新失败：${j.message}`;
-      btn.textContent = "🔄 一键刷新数据";
-      btn.disabled = false;
-      return;
-    }
-    scannedBooks = j.data.novels || [];
-    if (scannedBooks.length === 0) {
-      document.getElementById("preCollectHint").textContent = "未找到任何作品";
-      btn.textContent = "🔄 一键刷新数据";
-      btn.disabled = false;
-      return;
-    }
-    await enrichWithBookMeta(scannedBooks);
-    renderBookChecklist();
-    updateSelectedCount();
-    document.getElementById("scanBooksBtn").style.display = "none";
-    document.getElementById("startCollectBtn").style.display = "block";
-    document.getElementById("preCollectHint").textContent = `已扫描 ${scannedBooks.length} 部作品，自动开始采集…`;
-    await startCollection();
-  } catch (e) {
-    document.getElementById("preCollectHint").textContent = `网络错误：${e.message}`;
-  }
   btn.textContent = "🔄 一键刷新数据";
   btn.disabled = false;
+
+  // Trigger scan (user can then pick books and collect manually)
+  scanBooks();
 }
 
 function renderBookChecklist() {
