@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>竞品情报 · 开发者</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#f0f2f5;color:#333;line-height:1.6}
+.container{max-width:800px;margin:0 auto;padding:20px}
+.header{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:24px;border-radius:12px;margin-bottom:20px}
+.header h1{font-size:24px;margin-bottom:4px}
+.header p{opacity:.85;font-size:14px}
+.header .api-key{font-size:12px;opacity:.7;margin-top:8px;display:flex;align-items:center;gap:8px}
+.header .api-key code{background:rgba(255,255,255,.15);padding:2px 8px;border-radius:4px;cursor:pointer}
+.card{background:#fff;border-radius:12px;padding:20px;margin-bottom:16px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+.card h3{margin-bottom:12px;color:#444}
+input,button{font-family:inherit}
+.input-row{display:flex;gap:8px}
+.input-row input{flex:1;padding:10px 14px;border:1px solid #ddd;border-radius:8px;font-size:14px;outline:none}
+.input-row input:focus{border-color:#667eea}
+.btn{padding:10px 20px;border:none;border-radius:8px;font-size:14px;cursor:pointer;font-weight:600;transition:all .2s}
+.btn-primary{background:#667eea;color:#fff}
+.btn-primary:hover{background:#5a6fd6}
+.btn-primary:disabled{background:#ccc;cursor:not-allowed}
+.btn-outline{background:#fff;color:#667eea;border:1px solid #667eea}
+.btn-sm{padding:5px 12px;font-size:12px}
+.btn-danger{background:#fff;color:#e74c3c;border:1px solid #e74c3c}
+.btn-danger:hover{background:#ffeaea}
+.status{font-size:13px;color:#999;margin-top:8px}
+.status.error{color:#e74c3c}
+.status.success{color:#27ae60}
+.platform-row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.platform-badge{padding:4px 12px;border-radius:20px;font-size:13px;font-weight:600}
+.platform-ready{background:#e8f5e9;color:#27ae60}
+.platform-pending{background:#fff3e0;color:#f39c12}
+.signal-item{padding:10px 12px;margin:6px 0;border-radius:8px;border-left:4px solid #eee}
+.signal-high{border-left-color:#e74c3c;background:#fff5f5}
+.signal-medium{border-left-color:#f39c12;background:#fffaee}
+.signal-low{border-left-color:#3498db;background:#f5f9ff}
+.signal-title{font-weight:600;font-size:14px;margin-bottom:2px}
+.signal-detail{font-size:13px;color:#666}
+.brief-section{margin:14px 0;padding:12px;background:#f8f9fa;border-radius:8px}
+.brief-section h4{color:#555;margin-bottom:6px;font-size:14px}
+.brief-section pre{white-space:pre-wrap;font-family:inherit;color:#555;font-size:13px;line-height:1.6}
+.warning-box{margin:8px 0;padding:8px 12px;background:#fff3cd;border-left:4px solid #f39c12;border-radius:6px;font-size:13px;color:#856404}
+.brand-list{display:flex;flex-wrap:wrap;gap:8px}
+.brand-tag{display:flex;align-items:center;gap:6px;padding:6px 14px;background:#f0f2f5;border-radius:20px;font-size:13px;transition:all .2s}
+.brand-tag:hover{background:#e8e8e8}
+.brand-tag .name{cursor:pointer;font-weight:500}
+.brand-tag .name:hover{color:#667eea}
+.brand-tag .dot{display:inline-block;width:6px;height:6px;border-radius:50%}
+.brand-tag .del{cursor:pointer;color:#999;margin-left:2px;font-size:11px}
+.brand-tag .del:hover{color:#e74c3c}
+.dot-red{background:#e74c3c}
+.dot-yellow{background:#f39c12}
+.dot-green{background:#27ae60}
+.loading{text-align:center;padding:40px;color:#999}
+.empty{text-align:center;padding:40px;color:#999;font-size:14px}
+.footer{text-align:center;padding:16px;color:#999;font-size:12px}
+.toggle-link{font-size:12px;color:#667eea;cursor:pointer;text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <h1>🔍 竞品情报</h1>
+    <p>监测竞品品牌动向 · 自动生成每日情报简报</p>
+    <div class="api-key">
+      API Key: <code id="apiKeyDisplay" onclick="toggleApiKey()" title="点击显示/隐藏">••••••••••</code>
+      <span class="toggle-link" onclick="toggleApiKey()" id="apiKeyToggle">显示</span>
+    </div>
+  </div>
+
+  <!-- Login status -->
+  <div class="card" id="loginCard">
+    <h3>🔐 数据源状态</h3>
+    <div class="platform-row">
+      <span>天猫：</span>
+      <span class="platform-badge platform-pending" id="tmallBadge">未登录</span>
+      <button class="btn btn-outline btn-sm" id="loginTmallBtn" onclick="doLogin('tmall')">登录天猫</button>
+      <span style="font-size:12px;color:#999" id="tmallHint">需要扫码登录淘宝</span>
+    </div>
+    <div class="platform-row" style="margin-top:8px">
+      <span>京东：</span>
+      <span class="platform-badge platform-pending" id="jdBadge">未登录</span>
+      <button class="btn btn-outline btn-sm" id="loginJdBtn" onclick="doLogin('jd')">登录京东</button>
+      <span style="font-size:12px;color:#999" id="jdHint">需要扫码登录京东</span>
+    </div>
+    <div class="status" id="loginMsg">登录后即可采集对应平台的商品数据</div>
+  </div>
+
+  <!-- Brand input -->
+  <div class="card">
+    <h3>📋 添加监测品牌</h3>
+    <div class="input-row">
+      <input id="brandInput" placeholder="输入竞品品牌名，如：完美日记" maxlength="50">
+      <button class="btn btn-primary" id="searchBtn" onclick="doSearch()">开始监测</button>
+    </div>
+    <div class="status" id="searchStatus"></div>
+  </div>
+
+  <!-- Monitored brands -->
+  <div class="card" id="brandsCard">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <h3>📌 已监测品牌</h3>
+      <div>
+        <button class="btn btn-outline btn-sm" id="compareBtn" onclick="doCompare()" style="display:none">对比选中</button>
+        <button class="btn btn-outline btn-sm" id="refreshBrandsBtn" onclick="loadBrands()" style="margin-left:6px">刷新</button>
+      </div>
+    </div>
+    <div class="brand-list" id="brandList"></div>
+    <div class="empty" id="noBrands">暂无监测品牌，在上方输入品牌名开始</div>
+  </div>
+
+  <!-- Brand Comparison -->
+  <div class="card" id="compareCard" style="display:none">
+    <h3>⚖️ 品牌对比</h3>
+    <div id="compareContent"></div>
+  </div>
+
+  <!-- Report -->
+  <div class="card" id="reportCard" style="display:none">
+    <h3 id="reportTitle">📊 竞品日报</h3>
+    <div id="reportContent"></div>
+  </div>
+
+  <!-- Charts -->
+  <div class="card" id="chartsCard" style="display:none">
+    <h3>📈 数据趋势</h3>
+    <div style="display:flex;gap:16px;flex-wrap:wrap">
+      <div style="flex:1;min-width:200px">
+        <h4 style="font-size:13px;color:#999;margin-bottom:8px">品牌健康度</h4>
+        <div id="healthGauge" style="text-align:center"></div>
+      </div>
+      <div style="flex:1;min-width:280px">
+        <h4 style="font-size:13px;color:#999;margin-bottom:8px">商品数量趋势</h4>
+        <canvas id="trendChart" width="360" height="180" style="width:100%;max-width:360px;background:#fafafa;border-radius:8px"></canvas>
+      </div>
+      <div style="flex:1;min-width:280px">
+        <h4 style="font-size:13px;color:#999;margin-bottom:8px">信号分布</h4>
+        <div id="signalBars"></div>
+      </div>
+    </div>
+    <div style="margin-top:12px;font-size:12px;color:#999;text-align:center" id="trendNote"></div>
+  </div>
+
+  <div class="footer">竞品情报 SaaS · 开发者</div>
+</div>
+
+<script>
+const API = "/api/v1";
+const API_KEY = "dev_sk_demo_001";
+let apiKeyVisible = false;
+document.getElementById("apiKeyDisplay").textContent = "••••••••••";
+
+let currentBrand = "";
+let monitoredBrands = [];
+let tmallReady = false;
+let jdReady = false;
+let compareList = [];
+
+// ── Init ──────────────────────────────────────────────────────
+
+(async function init() {
+  await checkLogin();
+  await loadBrands();
+})();
+
+function toggleApiKey() {
+  apiKeyVisible = !apiKeyVisible;
+  document.getElementById("apiKeyDisplay").textContent = apiKeyVisible ? API_KEY : "••••••••••";
+  document.getElementById("apiKeyToggle").textContent = apiKeyVisible ? "隐藏" : "显示";
+}
+
+async function checkLogin() {
+  try {
+    const res = await api("GET", "/health");
+    const tid = Object.keys(res.tenants || {})[0];
+    if (tid && res.tenants[tid]) {
+      tmallReady = !!res.tenants[tid].tmallReady;
+      jdReady = !!res.tenants[tid].jdReady;
+      updateLoginUI();
+    }
+  } catch(e) {}
+}
+
+function updateLoginUI() {
+  const card = document.getElementById("loginCard");
+  const tmallBadge = document.getElementById("tmallBadge");
+  const jdBadge = document.getElementById("jdBadge");
+  const tmallBtn = document.getElementById("loginTmallBtn");
+  const jdBtn = document.getElementById("loginJdBtn");
+  const tmallHint = document.getElementById("tmallHint");
+  const jdHint = document.getElementById("jdHint");
+
+  if (tmallReady) {
+    card.style.borderLeftColor = "#27ae60";
+    tmallBadge.textContent = "已登录";
+    tmallBadge.className = "platform-badge platform-ready";
+    tmallBtn.textContent = "重新登录";
+    tmallHint.textContent = "✓ 就绪";
+  } else {
+    card.style.borderLeftColor = jdReady ? "#f39c12" : "#e74c3c";
+    tmallBadge.textContent = "未登录";
+    tmallBadge.className = "platform-badge platform-pending";
+    tmallBtn.textContent = "登录天猫";
+    tmallHint.textContent = "需要扫码登录淘宝";
+  }
+
+  if (jdReady) {
+    jdBadge.textContent = "已登录";
+    jdBadge.className = "platform-badge platform-ready";
+    jdBtn.textContent = "重新登录";
+    jdHint.textContent = "✓ 就绪";
+  } else {
+    jdBadge.textContent = "未登录";
+    jdBadge.className = "platform-badge platform-pending";
+    jdBtn.textContent = "登录京东";
+    jdHint.textContent = "需要扫码登录京东";
+  }
+
+  document.getElementById("loginMsg").textContent =
+    (!tmallReady && !jdReady) ? "请登录至少一个数据源后开始监测" :
+    (tmallReady && jdReady) ? "双数据源就绪，可同时采集天猫+京东数据" :
+    tmallReady ? "天猫已就绪，建议同时登录京东获取更全面数据" :
+    "京东已就绪，建议同时登录天猫获取更全面数据";
+}
+
+// ── Login ─────────────────────────────────────────────────────
+
+async function doLogin(platform) {
+  const label = platform === "jd" ? "京东" : "天猫";
+  const btnId = platform === "jd" ? "loginJdBtn" : "loginTmallBtn";
+  const btn = document.getElementById(btnId);
+  const msg = document.getElementById("loginMsg");
+
+  btn.disabled = true;
+  btn.textContent = "正在打开浏览器…";
+  msg.textContent = `浏览器正在打开，请在弹窗中扫码或输入密码登录${label}`;
+
+  try {
+    const res = await api("POST", "/login", { platform });
+    if (res.code === 0) {
+      msg.textContent = res.message;
+      if (res.profileReady) {
+        if (platform === "jd") jdReady = true; else tmallReady = true;
+        updateLoginUI();
+        btn.disabled = false;
+      } else if (res.launching) {
+        btn.textContent = "浏览器已打开，等待登录…";
+        const poll = setInterval(async () => {
+          try {
+            const r2 = await api("POST", "/login", { platform });
+            if (r2.profileReady) {
+              clearInterval(poll);
+              if (platform === "jd") jdReady = true; else tmallReady = true;
+              updateLoginUI();
+              btn.disabled = false;
+            }
+          } catch(e) {}
+        }, 8000);
+        setTimeout(() => { clearInterval(poll); btn.disabled = false; btn.textContent = `登录${label}`; }, 300000);
+      }
+    } else {
+      msg.textContent = "启动失败: " + res.message;
+      btn.disabled = false;
+      btn.textContent = `登录${label}`;
+    }
+  } catch(e) {
+    msg.textContent = "网络错误: " + e.message;
+    btn.disabled = false;
+    btn.textContent = `登录${label}`;
+  }
+}
+
+// ── Search ────────────────────────────────────────────────────
+
+async function doSearch() {
+  const brand = document.getElementById("brandInput").value.trim();
+  if (!brand) {
+    document.getElementById("searchStatus").innerHTML = '<span class="status error">请输入品牌名</span>';
+    return;
+  }
+  if (brand.length < 2) {
+    document.getElementById("searchStatus").innerHTML = '<span class="status error">品牌名至少2个字符</span>';
+    return;
+  }
+
+  if (!tmallReady && !jdReady) {
+    document.getElementById("searchStatus").innerHTML = '<span class="status error">请先登录至少一个数据源</span>';
+    return;
+  }
+
+  const btn = document.getElementById("searchBtn");
+  const status = document.getElementById("searchStatus");
+
+  btn.disabled = true;
+  btn.textContent = "采集中…";
+  const sources = [];
+  if (tmallReady) sources.push("天猫");
+  if (jdReady) sources.push("京东");
+  status.innerHTML = `<span class="status">正在采集${sources.join("+")}数据，请稍候…</span>`;
+
+  try {
+    const res = await api("POST", "/search", { brand });
+    if (res.code === 0) {
+      const brief = res.data.brief;
+      const srcLabel = (brief.sources || []).map(s => s === "tmall" ? "天猫" : "京东").join("+") || "无数据";
+      const hasWarnings = brief.warnings && brief.warnings.length > 0;
+      status.innerHTML = `<span class="status success">采集完成 (${srcLabel}) ✓</span>`;
+      if (hasWarnings) {
+        status.innerHTML += `<div class="warning-box">⚠️ ${brief.warnings.join("；")}</div>`;
+      }
+      currentBrand = brand;
+      showReport(brief);
+
+      await loadBrands();
+    } else if (res.code === 401) {
+      status.innerHTML = `<span class="status error">${res.message}</span>`;
+    } else {
+      status.innerHTML = `<span class="status error">错误: ${res.message || "未知错误"}</span>`;
+    }
+  } catch (e) {
+    status.innerHTML = `<span class="status error">网络错误: ${e.message}</span>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "开始监测";
+  }
+}
+
+// ── Brands ────────────────────────────────────────────────────
+
+async function loadBrands() {
+  try {
+    const res = await api("GET", "/brands");
+    monitoredBrands = res.data || [];
+    renderBrands();
+  } catch (e) { console.error(e); }
+}
+
+function renderBrands() {
+  const list = document.getElementById("brandList");
+  const empty = document.getElementById("noBrands");
+  const btn = document.getElementById("compareBtn");
+  if (monitoredBrands.length === 0) {
+    list.innerHTML = "";
+    empty.style.display = "block";
+    btn.style.display = "none";
+    return;
+  }
+  empty.style.display = "none";
+  list.innerHTML = monitoredBrands.map(b => {
+    const dotClass = b.lastHighCount > 0 ? "dot-red" : b.lastSignalCount > 0 ? "dot-yellow" : "dot-green";
+    return `<div class="brand-tag">
+      <input type="checkbox" style="margin-right:2px;cursor:pointer" value="${escHtml(b.name)}"
+        onchange="toggleCompare(this)" onclick="event.stopPropagation()"
+        ${compareList.includes(b.name) ? "checked" : ""}>
+      <span class="dot ${dotClass}"></span>
+      <span class="name" onclick="loadReport('${escHtml(b.name)}')">${escHtml(b.name)}</span>
+      <span class="del" onclick="removeBrand(event, '${escHtml(b.name)}')" title="删除">✕</span>
+    </div>`;
+  }).join("");
+  btn.style.display = compareList.length >= 2 ? "" : "none";
+}
+
+async function removeBrand(e, brand) {
+  e.stopPropagation();
+  if (!confirm(`确定要删除「${brand}」的所有数据吗？此操作不可撤销。`)) return;
+  try {
+    const res = await api("POST", "/brands/remove", { brand });
+    if (res.code === 0) {
+      compareList = compareList.filter(n => n !== brand);
+      if (currentBrand === brand) {
+        currentBrand = "";
+        document.getElementById("reportCard").style.display = "none";
+        document.getElementById("chartsCard").style.display = "none";
+        document.getElementById("compareCard").style.display = "none";
+      }
+      await loadBrands();
+    }
+  } catch (e) {
+    alert("删除失败: " + e.message);
+  }
+}
+
+function toggleCompare(cb) {
+  if (cb.checked) {
+    if (!compareList.includes(cb.value)) compareList.push(cb.value);
+  } else {
+    compareList = compareList.filter(n => n !== cb.value);
+  }
+  document.getElementById("compareBtn").style.display = compareList.length >= 2 ? "" : "none";
+  if (compareList.length < 2) {
+    document.getElementById("compareCard").style.display = "none";
+  }
+}
+
+async function doCompare() {
+  if (compareList.length < 2) return;
+  try {
+    const res = await api("GET", `/compare?brands=${encodeURIComponent(compareList.join(","))}`);
+    if (res.code !== 0) return;
+    const data = res.data;
+    document.getElementById("compareCard").style.display = "block";
+
+    const maxCount = Math.max(...data.map(d => d.productCount), 1);
+
+    document.getElementById("compareContent").innerHTML = `
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <tr style="border-bottom:2px solid #eee">
+            <th style="padding:8px;text-align:left">品牌</th>
+            <th style="padding:8px;text-align:center">健康度</th>
+            <th style="padding:8px;text-align:center">商品数</th>
+            <th style="padding:8px;text-align:center">信号</th>
+            <th style="padding:8px;text-align:center">高优</th>
+            <th style="padding:8px;text-align:center">数据源</th>
+            <th style="padding:8px;text-align:right">价格区间</th>
+          </tr>
+          ${data.map(d => d.error ? `
+            <tr><td colspan="7" style="padding:8px;color:#999">${escHtml(d.name)}: ${d.error}</td></tr>
+          ` : `
+            <tr style="border-bottom:1px solid #f0f0f0">
+              <td style="padding:8px;font-weight:600">${escHtml(d.name)}</td>
+              <td style="padding:8px;text-align:center">
+                <span style="color:${d.healthScore >= 70 ? '#27ae60' : d.healthScore >= 40 ? '#f39c12' : '#e74c3c'};font-weight:600">${d.healthScore}</span>
+              </td>
+              <td style="padding:8px;text-align:center">
+                ${d.productCount}
+                <div style="background:#eee;border-radius:4px;height:3px;margin-top:3px">
+                  <div style="background:#667eea;height:100%;width:${Math.round(d.productCount/maxCount*100)}%;border-radius:4px"></div>
+                </div>
+              </td>
+              <td style="padding:8px;text-align:center">${d.signalCount}</td>
+              <td style="padding:8px;text-align:center">
+                <span style="color:${d.highCount > 0 ? '#e74c3c' : '#999'}">${d.highCount}</span>
+              </td>
+              <td style="padding:8px;text-align:center;font-size:11px">
+                ${(d.sources || []).map(s => `<span style="padding:1px 5px;border-radius:3px;background:${s === 'tmall' ? '#ffebee' : '#e3f2fd'};color:${s === 'tmall' ? '#c62828' : '#1565c0'};margin:0 1px">${s === 'tmall' ? '猫' : '京'}</span>`).join("") || "N/A"}
+              </td>
+              <td style="padding:8px;text-align:right;font-size:12px">
+                ${d.priceRange ? `¥${d.priceRange.min} ~ ¥${d.priceRange.max}` : "N/A"}
+              </td>
+            </tr>
+          `).join("")}
+        </table>
+      </div>`;
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// ── Report ────────────────────────────────────────────────────
+
+let currentReportDate = "";
+
+async function loadReport(brand) {
+  currentBrand = brand;
+  try {
+    const res = await api("GET", `/report?brand=${encodeURIComponent(brand)}`);
+    if (res.code === 0) {
+      showReport(res.data);
+    } else {
+      document.getElementById("reportContent").innerHTML = `<div class="empty">${res.message}</div>`;
+      document.getElementById("reportCard").style.display = "block";
+      document.getElementById("chartsCard").style.display = "none";
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function showReport(brief) {
+  if (!brief) return;
+  document.getElementById("reportCard").style.display = "block";
+  currentReportDate = brief.date || "";
+
+  const sources = brief.sources || [];
+  const srcBadges = sources.length > 0
+    ? sources.map(s => `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:6px;background:${s === 'tmall' ? '#ffebee' : '#e3f2fd'};color:${s === 'tmall' ? '#c62828' : '#1565c0'}">${s === 'tmall' ? '天猫' : '京东'}</span>`).join("")
+    : "";
+
+  const dateNav = currentReportDate
+    ? `<span style="font-size:13px;margin:0 12px;cursor:pointer" onclick="shiftDate(-1)" title="前一天">◀</span>
+       <span style="font-size:14px;font-weight:600">${currentReportDate}</span>
+       <span style="font-size:13px;margin:0 12px;cursor:pointer" onclick="shiftDate(1)" title="后一天">▶</span>`
+    : "";
+
+  const exportBtn = `<span onclick="doExport('${escAttr(brief.brand)}')" style="font-size:12px;color:#667eea;cursor:pointer;margin-left:8px;font-weight:normal" title="下载CSV">⬇ 导出</span>`;
+
+  document.getElementById("reportTitle").innerHTML = `📊 竞品日报 · ${escHtml(brief.brand)}${srcBadges} ${dateNav}${exportBtn}`;
+
+  // Warnings
+  let warningsHtml = "";
+  if (brief.warnings && brief.warnings.length > 0) {
+    warningsHtml = brief.warnings.map(w => `<div class="warning-box">⚠️ ${escHtml(w)}</div>`).join("");
+  }
+
+  const sectionsHtml = (brief.sections || []).map(s => `
+    <div class="brief-section">
+      <h4>${s.emoji} ${s.title}</h4>
+      <pre>${s.body}</pre>
+    </div>
+  `).join("");
+
+  document.getElementById("reportContent").innerHTML = warningsHtml + (sectionsHtml
+    || `<div class="brief-section"><pre>${brief.headline || "暂无数据"}</pre></div>`);
+
+  renderAllCharts(brief);
+}
+
+async function shiftDate(delta) {
+  if (!currentBrand || !currentReportDate) return;
+  const d = new Date(currentReportDate);
+  d.setDate(d.getDate() + delta);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  const date = `${y}-${m}-${day}`;
+  try {
+    const res = await api("GET", `/report?brand=${encodeURIComponent(currentBrand)}&date=${date}`);
+    if (res.code === 0) {
+      showReport(res.data);
+    } else {
+      document.getElementById("reportContent").innerHTML = `<div class="empty">${date}: ${res.message}</div>`;
+      document.getElementById("chartsCard").style.display = "none";
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// ── Charts ────────────────────────────────────────────────────
+
+function renderAllCharts(brief) {
+  document.getElementById("chartsCard").style.display = "block";
+  renderHealthGauge(brief.healthScore);
+  renderSignalBars(brief);
+  renderTrendChart(brief);
+}
+
+function renderHealthGauge(score) {
+  const el = document.getElementById("healthGauge");
+  if (!el) return;
+  if (score == null) {
+    el.innerHTML = `<div style="color:#999;font-size:13px;padding:20px">暂无数据</div>`;
+    return;
+  }
+  const color = score >= 70 ? "#27ae60" : score >= 40 ? "#f39c12" : "#e74c3c";
+  const label = score >= 70 ? "健康" : score >= 40 ? "关注" : "预警";
+  const size = 100;
+  const stroke = 8;
+  const r = (size - stroke) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ * (1 - score / 100);
+  el.innerHTML = `
+    <svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="#eee" stroke-width="${stroke}"/>
+      <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="${color}"
+        stroke-width="${stroke}" stroke-linecap="round"
+        stroke-dasharray="${circ}" stroke-dashoffset="${offset}"
+        transform="rotate(-90 ${size / 2} ${size / 2})" style="transition:stroke-dashoffset .6s"/>
+      <text x="${size / 2}" y="${size / 2 - 4}" text-anchor="middle" font-size="22" font-weight="bold" fill="${color}">${score}</text>
+      <text x="${size / 2}" y="${size / 2 + 16}" text-anchor="middle" font-size="12" fill="${color}">${label}</text>
+    </svg>`;
+}
+
+function renderSignalBars(brief) {
+  const highCount = brief.highCount || 0;
+  const total = brief.signalCount || 0;
+  const medCount = total - highCount;
+  const bars = [
+    { label: "高优先级", count: highCount, color: "#e74c3c" },
+    { label: "一般变动", count: medCount, color: "#f39c12" },
+  ];
+  const max = Math.max(...bars.map(b => b.count), 1);
+  document.getElementById("signalBars").innerHTML = bars.map(b => `
+    <div style="margin:8px 0">
+      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px">
+        <span>${b.label}</span><span>${b.count}</span>
+      </div>
+      <div style="background:#eee;border-radius:4px;height:8px;overflow:hidden">
+        <div style="background:${b.color};height:100%;width:${Math.round(b.count/max*100)}%;border-radius:4px;transition:width .3s"></div>
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderTrendChart(brief) {
+  const canvas = document.getElementById("trendChart");
+  const note = document.getElementById("trendNote");
+  if (!canvas) return;
+  const trends = brief.raw?.trends;
+  const trendData = trends?.productCount;
+  if (!trendData || !trendData.values || trendData.values.length < 2) {
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#999";
+    ctx.font = "13px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("需要至少2天数据", canvas.width / 2, canvas.height / 2);
+    if (note) note.textContent = "持续采集2天后将显示趋势";
+    return;
+  }
+  const data = trendData.values.map((v, i) => ({ label: `D${i + 1}`, value: v }));
+  if (note) {
+    const dir = { rising: "↑ 上升趋势", falling: "↓ 下降趋势", stable: "→ 趋于平稳" }[trendData.trend] || "";
+    note.textContent = `近${data.length}天${dir}`;
+  }
+  drawTrendChart(data);
+}
+
+function drawTrendChart(data) {
+  const canvas = document.getElementById("trendChart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const W = canvas.width;
+  const H = canvas.height;
+  const pad = { top: 20, right: 20, bottom: 30, left: 50 };
+  ctx.clearRect(0, 0, W, H);
+  if (!data || data.length < 2) return;
+
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+  const vals = data.map(d => d.value);
+  const min = Math.min(...vals) * 0.9;
+  const max = Math.max(...vals) * 1.1;
+  const range = max - min || 1;
+  const scaleX = (i) => pad.left + (i / (data.length - 1)) * plotW;
+  const scaleY = (v) => pad.top + plotH - ((v - min) / range) * plotH;
+
+  // Grid
+  ctx.strokeStyle = "#eee";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = pad.top + (plotH / 4) * i;
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    ctx.fillStyle = "#999"; ctx.font = "10px sans-serif"; ctx.textAlign = "right";
+    ctx.fillText(String(Math.round(max - (range / 4) * i)), pad.left - 6, y + 4);
+  }
+  // X labels
+  ctx.textAlign = "center";
+  data.forEach((d, i) => {
+    ctx.fillStyle = "#999"; ctx.font = "10px sans-serif";
+    ctx.fillText(d.label, scaleX(i), H - 6);
+  });
+  // Line
+  ctx.strokeStyle = "#667eea"; ctx.lineWidth = 2; ctx.lineJoin = "round";
+  ctx.beginPath();
+  data.forEach((d, i) => {
+    const x = scaleX(i), y = scaleY(d.value);
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+  // Fill
+  ctx.lineTo(scaleX(data.length - 1), pad.top + plotH);
+  ctx.lineTo(pad.left, pad.top + plotH);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(102,126,234,0.1)"; ctx.fill();
+  // Dots
+  data.forEach((d, i) => {
+    const x = scaleX(i), y = scaleY(d.value);
+    ctx.fillStyle = "#667eea"; ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
+  });
+}
+
+// ── CSV Export ────────────────────────────────────────────────
+
+async function doExport(brand) {
+  try {
+    const res = await fetch(`${API}/export?brand=${encodeURIComponent(brand)}`, {
+      headers: { "Authorization": `Bearer ${API_KEY}` },
+    });
+    if (!res.ok) throw new Error("Export failed");
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${brand}-${currentReportDate || new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert("导出失败: " + e.message);
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────
+
+async function api(method, path, body) {
+  const opts = {
+    method,
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${API_KEY}` },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(API + path, opts);
+  return res.json();
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function escAttr(s) {
+  return String(s).replace(/'/g, "\\'").replace(/"/g, "&quot;");
+}
+
+document.getElementById("brandInput").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") doSearch();
+});
+</script>
+</body>
+</html>

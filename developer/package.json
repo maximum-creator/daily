@@ -1,0 +1,17 @@
+{
+  "name": "developer",
+  "version": "1.0.0",
+  "description": "竞品情报 SaaS — 品牌竞品数据采集与AI日报生成",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "morgan": "^1.10.0",
+    "express-rate-limit": "^7.1.0",
+    "playwright": "^1.40.0",
+    "nodemailer": "^6.9.0"
+  }
+}

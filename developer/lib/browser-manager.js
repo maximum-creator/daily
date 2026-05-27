@@ -1,0 +1,224 @@
+// Headless Chromium browser pool with per-tenant persistent contexts.
+// Cookie strategy: persistent context for login → export cookies to JSON →
+// import into headless context for collection.
+const { chromium } = require("playwright");
+const fs = require("fs");
+const path = require("path");
+
+const PROFILES_DIR = path.join(__dirname, "..", "browser-profiles");
+
+const pool = new Map();
+
+function profileDir(tenantId) {
+  return path.join(PROFILES_DIR, tenantId);
+}
+
+function getBrowserOptions(headless) {
+  return {
+    headless,
+    viewport: { width: 1920, height: 1080 },
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    locale: "zh-CN",
+    timezoneId: "Asia/Shanghai",
+    args: [
+      "--disable-features=TranslateUI",
+      "--no-first-run",
+      "--disable-blink-features=AutomationControlled",
+      "--disable-automation",
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--window-position=-32000,-32000",
+    ],
+  };
+}
+
+async function initScript(context) {
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => false });
+    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, "languages", { get: () => ["zh-CN", "zh", "en"] });
+    window.chrome = { runtime: {} };
+  });
+}
+
+async function launchContext(tenantId) {
+  const dir = profileDir(tenantId);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const context = await chromium.launchPersistentContext(dir, getBrowserOptions(true));
+  await initScript(context);
+
+  // Inject saved cookies
+  await injectCookies(tenantId, context);
+
+  return context;
+}
+
+// Close all restored pages from a persistent context except keep one blank page.
+// launchPersistentContext restores ALL previously open tabs — this prevents
+// the user from seeing dozens of old pages reload on every login.
+async function cleanupPages(context) {
+  const pages = context.pages();
+  if (pages.length <= 1) return;
+  for (let i = pages.length - 1; i >= 1; i--) {
+    await pages[i].close().catch(() => {});
+  }
+  // Navigate the remaining page to blank to avoid loading old content
+  await pages[0].goto("about:blank", { waitUntil: "commit", timeout: 3000 }).catch(() => {});
+}
+
+async function injectCookies(tenantId, context) {
+  for (const platform of ["tmall", "jd"]) {
+    const cookies = loadCookies(tenantId, platform);
+    if (cookies.length > 0) {
+      try {
+        await context.addCookies(cookies);
+      } catch (e) {
+        console.error(`[cookies] 注入${platform} cookies失败: ${e.message}`);
+      }
+    }
+  }
+}
+
+async function getPage(tenantId) {
+  let entry = pool.get(tenantId);
+
+  if (entry) {
+    try {
+      // Re-inject cookies before use — the other platform may have logged in since
+      await injectCookies(tenantId, entry.context);
+      const page = await entry.context.newPage();
+      entry.busy = true;
+      entry.pageCount++;
+      return page;
+    } catch (e) {
+      await entry.context.close().catch(() => {});
+      pool.delete(tenantId);
+    }
+  }
+
+  // Create headed context — anti-bot bypass requires visible browser
+  const dir = profileDir(tenantId);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const context = await chromium.launchPersistentContext(dir, getBrowserOptions(false));
+  await initScript(context);
+  await cleanupPages(context);
+  await injectCookies(tenantId, context);
+
+  entry = { context, pageCount: 0, busy: false };
+  pool.set(tenantId, entry);
+  entry.busy = true;
+  entry.pageCount++;
+  const page = await entry.context.newPage();
+  return page;
+}
+
+// Pool management for external contexts (e.g., from login flow)
+function addToPool(tenantId, context) {
+  // Close existing pool entry if any
+  const existing = pool.get(tenantId);
+  if (existing) {
+    existing.context.close().catch(() => {});
+  }
+  // Clean up restored pages to prevent tab accumulation
+  cleanupPages(context).catch(() => {});
+  pool.set(tenantId, { context, pageCount: 0, busy: false });
+}
+
+function releasePage(tenantId, page) {
+  const entry = pool.get(tenantId);
+  if (!entry) return;
+  page.close().catch(() => {});
+  if (entry.pageCount > 0) entry.pageCount--;
+  entry.busy = false;
+}
+
+async function closeTenant(tenantId) {
+  const entry = pool.get(tenantId);
+  if (!entry) return;
+  await entry.context.close().catch(() => {});
+  pool.delete(tenantId);
+}
+
+async function closeAll() {
+  for (const [id, entry] of pool) {
+    await entry.context.close().catch(() => {});
+  }
+  pool.clear();
+}
+
+// ── Cookie persistence (explicit JSON export/import) ────────────
+
+function saveCookies(tenantId, cookies, platform) {
+  const dir = profileDir(tenantId);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const fp = path.join(dir, `cookies-${platform}.json`);
+  // Only save essential auth cookies (filter out analytics/tracking)
+  const filtered = cookies.filter(c => {
+    const name = c.name || "";
+    // Skip analytics/tracking cookies, keep session/auth ones
+    if (name.startsWith("_") || name.startsWith("utm_") || name.startsWith("cnzz")) return false;
+    if (name === "xlly_s" || name === "x5secdata") return false;
+    return true;
+  });
+  fs.writeFileSync(fp, JSON.stringify(filtered, null, 2));
+  console.log(`[cookies] 已保存 ${filtered.length} 个 ${platform} cookies`);
+  return filtered.length;
+}
+
+function loadCookies(tenantId, platform) {
+  const fp = path.join(profileDir(tenantId), `cookies-${platform}.json`);
+  if (!fs.existsSync(fp)) return [];
+  try {
+    const data = JSON.parse(fs.readFileSync(fp, "utf-8"));
+    // Validate cookie freshness — expire if older than 12 hours
+    const now = Date.now();
+    const valid = data.filter(c => {
+      if (!c.expires || c.expires === -1) return true; // session cookie
+      return c.expires * 1000 > now;
+    });
+    return valid;
+  } catch (e) {
+    console.error(`[cookies] 加载${platform} cookies失败: ${e.message}`);
+    return [];
+  }
+}
+
+function hasSavedCookies(tenantId, platform) {
+  const fp = path.join(profileDir(tenantId), `cookies-${platform}.json`);
+  if (!fs.existsSync(fp)) return false;
+  const cookies = loadCookies(tenantId, platform);
+  return cookies.length > 0;
+}
+
+// ── Platform login status ──────────────────────────────────────
+
+function hasProfile(tenantId, platform) {
+  const dir = profileDir(tenantId);
+  if (!fs.existsSync(dir)) return false;
+  // Check for either marker file OR saved cookies
+  const marker = platform ? `.profile-ready-${platform}` : ".profile-ready";
+  if (fs.existsSync(path.join(dir, marker))) return true;
+  return hasSavedCookies(tenantId, platform || "tmall");
+}
+
+function markProfileReady(tenantId, platform) {
+  const dir = profileDir(tenantId);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const marker = platform ? `.profile-ready-${platform}` : ".profile-ready";
+  fs.writeFileSync(path.join(dir, marker), new Date().toISOString());
+}
+
+function getPlatformStatus(tenantId) {
+  return {
+    tmall: hasProfile(tenantId, "tmall") || hasProfile(tenantId),
+    jd: hasProfile(tenantId, "jd"),
+  };
+}
+
+process.on("SIGTERM", () => { closeAll(); process.exit(); });
+process.on("SIGINT", () => { closeAll(); process.exit(); });
+
+module.exports = { chromium, getPage, releasePage, closeTenant, closeAll, hasProfile, markProfileReady, getPlatformStatus, addToPool, cleanupPages, getBrowserOptions, initScript, injectCookies, saveCookies, loadCookies, hasSavedCookies, PROFILES_DIR };
