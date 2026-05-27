@@ -512,6 +512,23 @@ function updateCollectMode() {
 // ── Phase 1.8: Scan & Select Books ──
 let scannedBooks = [];
 
+async function enrichWithBookMeta(books) {
+  try {
+    const r = await fetch(API + "/books", {
+      headers: { Authorization: AUTH }
+    });
+    const j = await r.json();
+    const existing = j.data || [];
+    for (const b of books) {
+      const match = existing.find(e => e.name === b.name);
+      if (match) {
+        b.words = match.cumulativeWords || 0;
+        b.totalChapters = match.totalChapters || 0;
+      }
+    }
+  } catch (e) { /* best-effort, render without metadata */ }
+}
+
 async function scanBooks() {
   const btn = document.getElementById("scanBooksBtn");
   btn.disabled = true;
@@ -541,6 +558,7 @@ async function scanBooks() {
       return;
     }
 
+    await enrichWithBookMeta(scannedBooks);
     renderBookChecklist();
     updateSelectedCount();
     btn.style.display = "none";
@@ -587,6 +605,7 @@ async function oneClickRefresh() {
       btn.disabled = false;
       return;
     }
+    await enrichWithBookMeta(scannedBooks);
     renderBookChecklist();
     updateSelectedCount();
     document.getElementById("scanBooksBtn").style.display = "none";
@@ -608,10 +627,14 @@ function renderBookChecklist() {
     else if (b.status && (b.status.includes("验证") || b.status.includes("审核"))) statusCls = "verifying";
     else if (b.status && b.status.includes("完结")) statusCls = "finished";
 
+    const words = b.words > 0 ? (b.words / 10000).toFixed(1) + "万字" : "";
+    const extra = [words, b.totalChapters > 0 ? b.totalChapters + "章" : ""].filter(Boolean).join(" · ");
+
     return `<label class="book-check-item">
       <input type="checkbox" checked data-idx="${i}" onchange="updateSelectedCount()">
       <span class="bc-name">${escHtml(b.name)}</span>
       <span class="bc-status ${statusCls}">${escHtml(b.status || '连载中')}</span>
+      ${extra ? `<span style="font-size:11px;color:#999;margin-left:6px">${extra}</span>` : ""}
     </label>`;
   }).join("");
 }
@@ -822,8 +845,9 @@ async function loadBooks() {
   sel.innerHTML = '<option value="">-- 请选择一本书籍 --</option>';
   if (books && books.length > 0) {
     books.forEach(b => {
+      const words = b.cumulativeWords > 0 ? (b.cumulativeWords / 10000).toFixed(1) + "万字 · " : '';
       const dateTag = b.latestDate ? ` · ${b.latestDate}` : '';
-      sel.innerHTML += `<option value="${b.name}" data-date="${b.latestDate || ''}">${b.name}（${b.totalChapters || 0}章${dateTag}）</option>`;
+      sel.innerHTML += `<option value="${b.name}" data-date="${b.latestDate || ''}">${b.name}（${words}${b.totalChapters || 0}章${dateTag}）</option>`;
     });
     sel.onchange = () => onBookChange();
   }
