@@ -1028,6 +1028,7 @@ app.get("/api/v1/analysis", (req, res) => {
   // ── Lifecycle Detection (multi-signal) ──
   // Signal 1: explicit status text from page
   const explicitVerification = status.includes("验证中") || status.includes("审核中");
+  const isRecommendation = status.includes("推荐中");
   const isSigned = status.includes("已签约");
   const isFinished = status.includes("已完结");
 
@@ -1056,12 +1057,14 @@ app.get("/api/v1/analysis", (req, res) => {
   const looksLikeVerification = (
     !isSigned &&
     !isFinished &&
+    !isRecommendation &&
     daysSinceFirstPublish <= 14 &&
     (explicitVerification || searchRatio > 0.5 || daysSinceFirstPublish <= 10)
   );
 
   const stage = isFinished ? "finished"
     : isSigned ? "signed"
+    : isRecommendation ? "recommendation"
     : (explicitVerification || looksLikeVerification) ? "verification"
     : "unsigned";
 
@@ -1287,11 +1290,12 @@ app.get("/api/v1/analysis", (req, res) => {
   // 番茄验证期逻辑：读完率是最重要的信号，低于25%基本不会过验证
   // 签约后追读率是关键——直接影响推荐位质量
   const benchmarkSets = {
-    unsigned:    { completion: 20, follow: 25, searchRatioMax: 85, bookmarkRate: 5 },
-    verification:{ completion: 30, follow: 35, searchRatioMax: 55, bookmarkRate: 8 },
-    signed:      { completion: 35, follow: 40, searchRatioMax: 30, bookmarkRate: 10 },
-    ongoing:     { completion: 25, follow: 30, searchRatioMax: 25, bookmarkRate: 8 },
-    finished:    { completion: 15, follow: 20, searchRatioMax: 50, bookmarkRate: 5 },
+    unsigned:       { completion: 20, follow: 25, searchRatioMax: 85, bookmarkRate: 5 },
+    verification:   { completion: 30, follow: 35, searchRatioMax: 55, bookmarkRate: 8 },
+    recommendation: { completion: 32, follow: 38, searchRatioMax: 40, bookmarkRate: 9 },
+    signed:         { completion: 35, follow: 40, searchRatioMax: 30, bookmarkRate: 10 },
+    ongoing:        { completion: 25, follow: 30, searchRatioMax: 25, bookmarkRate: 8 },
+    finished:       { completion: 15, follow: 20, searchRatioMax: 50, bookmarkRate: 5 },
   };
   const bm = benchmarkSets[stage] || benchmarkSets.ongoing;
   const benchmarks = {
@@ -1450,6 +1454,54 @@ app.get("/api/v1/analysis", (req, res) => {
         category: "engagement",
         title: `追读率 ${avgFollow}% 表现不错`,
         detail: "虽然互动数据为零，但在追的读者黏性较好（追读率说明读者愿意跟着更新走）。这是一个积极信号——说明内容本身有吸引力，问题可能在于缺乏引导读者互动的「钩子」。",
+      });
+    }
+
+  // ═══ 推荐期 ═══
+  } else if (stage === "recommendation") {
+    suggestions.push({
+      priority: "info",
+      category: "platform",
+      title: "恭喜进入推荐期！平台正在主动推流中",
+      detail: `验证期已通过，平台正在通过推荐位、分类榜等渠道给你的书引流。这个阶段的核心指标是追读率（目标≥${bm.follow}%）和读完率（目标≥${bm.completion}%）——推荐位的持续时间和质量直接取决于这两项数据。`,
+    });
+    if (searchRatio > 0.5) {
+      suggestions.push({
+        priority: "high",
+        category: "traffic",
+        title: `搜索占比 ${Math.round(searchRatio * 100)}%，推荐流量尚未起量`,
+        detail: "推荐期内搜索占比应逐步下降，推荐+书城流量应成为主力。如果推荐流量迟迟不来，检查：①最近更新是否稳定②追读率是否达标③分类标签是否准确。",
+      });
+    } else {
+      suggestions.push({
+        priority: "medium",
+        category: "traffic",
+        title: `推荐流量占比 ${Math.round((1 - searchRatio) * 100)}%，推荐正在生效`,
+        detail: "搜索占比在健康范围内，说明平台的推荐渠道正在给你的书导流。继续保持日更节奏，推荐流量会随着数据积累而递增。",
+      });
+    }
+    if (avgCompletion < bm.completion) {
+      suggestions.push({
+        priority: "high",
+        category: "retention",
+        title: `读完率 ${avgCompletion}% 低于推荐期基准（${bm.completion}%）`,
+        detail: "推荐期读完率低可能导致平台减少推荐频次。检查：①前5章是否能快速抓住读者？②章节末尾是否有足够「钩子」让读者点下一章？③是否存在大量跳章现象？",
+      });
+    }
+    if (avgFollow < bm.follow) {
+      suggestions.push({
+        priority: "medium",
+        category: "retention",
+        title: `追读率 ${avgFollow}% 低于推荐期基准（${bm.follow}%）`,
+        detail: "追读率是推荐期最关键的指标之一。建议：①保持日更不断②在章节末尾设置悬念③适当使用「明日预告」引导读者次日回访。",
+      });
+    }
+    if (funnel.bookmarkRate < bm.bookmarkRate) {
+      suggestions.push({
+        priority: "medium",
+        category: "engagement",
+        title: `加书架率 ${funnel.bookmarkRate}% 偏低（目标≥${bm.bookmarkRate}%）`,
+        detail: "推荐期带来的新读者多，加书架率反映了内容的「初印象」吸引力。建议检查书名和简介是否能准确传达题材和卖点——新读者往往是先看书名简介再决定是否加书架。",
       });
     }
 
@@ -1763,6 +1815,7 @@ app.get("/api/v1/analysis", (req, res) => {
     stageLabel: {
       unsigned: "未签约",
       verification: "验证期",
+      recommendation: "推荐期",
       signed: "签约期",
       ongoing: "连载中",
       finished: "已完结",

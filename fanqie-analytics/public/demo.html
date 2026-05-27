@@ -63,6 +63,7 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
 .book-check-item .bc-name{flex:1;font-size:14px;text-align:left}
 .book-check-item .bc-status{font-size:11px;padding:2px 8px;border-radius:10px;white-space:nowrap}
 .bc-status.signed{background:#e8f5e9;color:#2e7d32}
+.bc-status.recommending{background:#fef9e7;color:#b45309}
 .bc-status.verifying{background:#fff3e0;color:#e65100}
 .bc-status.finished{background:#e3f2fd;color:#1565c0}
 .bc-status.ongoing{background:#f3e5f5;color:#7b1fa2}
@@ -83,6 +84,7 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
 /* Stage banner */
 .stage-banner{padding:15px 22px;border-radius:10px;margin-bottom:18px;display:flex;align-items:center;gap:14px;font-size:14px}
 .stage-verif{background:linear-gradient(135deg,#fff9e6,#fff3cd);color:#b45309;border-left:5px solid #f59e0b}
+.stage-recommend{background:linear-gradient(135deg,#fef9e7,#fdebd0);color:#7d6608;border-left:5px solid #f39c12}
 .stage-signed{background:linear-gradient(135deg,#eafaf1,#d4edda);color:#0d6e2d;border-left:5px solid #27ae60}
 .stage-finished{background:linear-gradient(135deg,#eaf2f8,#d6eaf8);color:#1a5276;border-left:5px solid #2980b9}
 .stage-ongoing{background:linear-gradient(135deg,#f5f5f5,#e8e8e8);color:#555;border-left:5px solid #999}
@@ -599,6 +601,7 @@ function renderBookChecklist() {
   container.innerHTML = scannedBooks.map((b, i) => {
     let statusCls = "ongoing";
     if (b.status && (b.status.includes("已签约") || b.status.includes("签约"))) statusCls = "signed";
+    else if (b.status && b.status.includes("推荐中")) statusCls = "recommending";
     else if (b.status && (b.status.includes("验证") || b.status.includes("审核"))) statusCls = "verifying";
     else if (b.status && b.status.includes("完结")) statusCls = "finished";
 
@@ -795,22 +798,33 @@ function finishCollection(collectResult, btn, overlay) {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
 
-  setTimeout(() => {
+  setTimeout(async () => {
     overlay.classList.remove("active");
     btn.textContent = collectResult?.code === 0 ? "✅ 采集完成" : "⚠️ 采集异常";
     btn.disabled = true;
 
-    const bookCount = collectResult?.data?.total || collectResult?.data?.books?.length || 0;
-    const elapsed = collectStartTime ? fmtElapsed(Math.floor((Date.now() - collectStartTime) / 1000)) : "";
-    document.getElementById("entryTitle").textContent = "请选择查询哪一本书籍数据？";
-    document.getElementById("entryHint").textContent = collectResult?.code === 0
-      ? `采集完成，共 ${bookCount} 本书${elapsed ? ' · 耗时 ' + elapsed : ''}。选择作品查看智能分析。`
-      : `采集异常：${collectResult?.message || '未知错误'}`;
-
     document.getElementById("sysCheckCard").style.display = "none";
     document.getElementById("preCollectCard").style.display = "none";
-    document.getElementById("bookSelectCard").style.display = "block";
-    loadBooks();
+
+    if (collectResult?.code === 0) {
+      // Go directly to analysis — load books into dropdown, pick first collected book
+      await loadBooks();
+      const sel = document.getElementById("bookSelect");
+      const books = collectResult?.data?.books || [];
+      const firstBook = books[0]?.name || books[0]?.book;
+      if (firstBook && sel.options.length > 1) {
+        sel.value = firstBook;
+        onBookChange();
+        // Re-collect before analysis to get the freshest data
+        await refreshAndAnalyze(firstBook);
+      } else {
+        document.getElementById("bookSelectCard").style.display = "block";
+        document.getElementById("entryHint").textContent = "采集完成，但未找到对应书籍数据";
+      }
+    } else {
+      document.getElementById("bookSelectCard").style.display = "block";
+      document.getElementById("entryHint").textContent = `采集异常：${collectResult?.message || '未知错误'}`;
+    }
   }, 600);
 }
 
@@ -882,6 +896,35 @@ async function quickAnalysis(mode) {
     startAnalysis();
     return;
   }
+
+  // Quick re-collect before daily/weekly analysis
+  const overlay = document.getElementById("loadOverlay");
+  overlay.classList.add("active");
+  document.getElementById("loadTitle").textContent = "正在刷新数据…";
+  document.getElementById("loadBarFill").style.width = "10%";
+  document.getElementById("loadPct").textContent = "10%";
+  document.getElementById("loadPhase").textContent = "正在采集最新数据…";
+
+  try {
+    const collectUrl = API + "/collect?force=true&books=" + encodeURIComponent(book);
+    await fetch(collectUrl, {
+      method: "POST",
+      headers: { Authorization: AUTH, "Content-Type": "application/json" }
+    });
+    // Brief wait for quick collection
+    let done = false;
+    const startTime = Date.now();
+    while (!done && (Date.now() - startTime) < 60000) {
+      await new Promise(r => setTimeout(r, 800));
+      try {
+        const pr = await fetch(API + "/collect/progress", { headers: { Authorization: AUTH } });
+        const pj = await pr.json();
+        if (pj.data?.done) done = true;
+      } catch (e) { /* continue */ }
+    }
+  } catch (e) { /* continue with existing data */ }
+
+  overlay.classList.remove("active");
 
   const endpoint = mode === "daily" ? "/daily" : "/weekly";
   const q = "?book=" + encodeURIComponent(book);
@@ -970,28 +1013,73 @@ function renderWeeklyResult(d) {
   `;
 }
 
-// ── Start Analysis ──
-async function startAnalysis() {
-  const book = document.getElementById("bookSelect").value;
-  if (!book) return;
-
+// ── Re-collect + Analyze ──
+async function refreshAndAnalyze(bookName) {
   const overlay = document.getElementById("loadOverlay");
   overlay.classList.add("active");
-  document.getElementById("loadTitle").textContent = "正在进行智能分析...";
+  document.getElementById("loadTitle").textContent = "正在刷新数据…";
   document.getElementById("loadElapsed").textContent = "";
   document.getElementById("loadBookSteps").innerHTML = "";
-  document.getElementById("loadBarFill").style.width = "10%";
-  document.getElementById("loadPct").textContent = "10%";
-  document.getElementById("loadPhase").textContent = "正在请求分析数据...";
+  document.getElementById("loadBarFill").style.width = "5%";
+  document.getElementById("loadPct").textContent = "5%";
+  document.getElementById("loadPhase").textContent = "正在重新采集最新数据…";
 
   const bar = document.getElementById("loadBarFill");
   const phase = document.getElementById("loadPhase");
 
+  // Step 1: Re-collect the book
+  let platformStale = false;
   try {
-    const q = "?book=" + encodeURIComponent(book);
-    bar.style.width = "30%";
-    document.getElementById("loadPct").textContent = "30%";
-    phase.textContent = "正在加载分析报告...";
+    const collectUrl = API + "/collect?force=true&books=" + encodeURIComponent(bookName);
+    const r = await fetch(collectUrl, {
+      method: "POST",
+      headers: { Authorization: AUTH, "Content-Type": "application/json" }
+    });
+    const collectResult = await r.json();
+
+    if (collectResult.code === 0 && !collectResult.cached) {
+      // Poll until collection completes
+      bar.style.width = "15%";
+      document.getElementById("loadPct").textContent = "15%";
+      phase.textContent = "正在采集数据…";
+
+      let done = false;
+      const startTime = Date.now();
+      while (!done && (Date.now() - startTime) < 120000) {
+        await new Promise(r => setTimeout(r, 1000));
+        try {
+          const pr = await fetch(API + "/collect/progress", { headers: { Authorization: AUTH } });
+          const pj = await pr.json();
+          if (pj.data?.done) { done = true; if (pj.data.error) throw new Error(pj.data.message); }
+          // Update progress
+          const pct = 15 + Math.min(40, (pj.data?.currentBook || 0) / Math.max(1, pj.data?.totalBooks || 1) * 40);
+          bar.style.width = pct + "%";
+          document.getElementById("loadPct").textContent = Math.round(pct) + "%";
+          const current = pj.data?.books?.find(b => b.status === "collecting");
+          if (current) phase.textContent = "正在采集: " + current.name;
+        } catch (e) { /* poll error, continue */ }
+      }
+    } else if (collectResult.cached) {
+      // Data already collected today
+      bar.style.width = "40%";
+      document.getElementById("loadPct").textContent = "40%";
+      phase.textContent = "今日数据已采集，直接分析…";
+    }
+  } catch (e) {
+    // Collection failed — continue with existing data, but flag staleness
+    console.warn("Re-collect failed, using existing data:", e.message);
+    platformStale = true;
+  }
+
+  // Step 2: Run analysis
+  bar.style.width = "55%";
+  document.getElementById("loadPct").textContent = "55%";
+  phase.textContent = "正在加载分析报告…";
+
+  try {
+    const q = "?book=" + encodeURIComponent(bookName);
+    bar.style.width = "70%";
+    document.getElementById("loadPct").textContent = "70%";
 
     const [analysis, chapters, summary] = await Promise.all([
       call("/analysis" + q),
@@ -999,14 +1087,38 @@ async function startAnalysis() {
       call("/summary" + q)
     ]);
 
+    // Check data freshness from analysis response
+    const freshness = analysis?.dataFreshness || {};
+    const wsFreshness = freshness.worksData;
+    const revFreshness = freshness.revenue;
+    const now = new Date();
+    const todayStr = now.getFullYear() + '-' +
+      String(now.getMonth() + 1).padStart(2, '0') + '-' +
+      String(now.getDate()).padStart(2, '0');
+
+    // Determine if platform data is stale
+    if (wsFreshness?.stale || revFreshness?.stale) {
+      platformStale = true;
+    }
+    // Also check if the updateTime itself is not from today
+    if (wsFreshness?.updateTime && !wsFreshness.updateTime.includes(todayStr)) {
+      platformStale = true;
+    }
+
     bar.style.width = "100%";
     document.getElementById("loadPct").textContent = "100%";
     phase.textContent = "分析完成";
 
     setTimeout(() => {
       overlay.classList.remove("active");
-      if (analysis) renderDashboard(analysis, chapters, summary, book);
-      else {
+      if (analysis) {
+        // Inject platform staleness flag into analysis data for the dashboard
+        if (platformStale) {
+          analysis._platformStale = true;
+          analysis._platformMessage = wsFreshness?.message || revFreshness?.message || "平台尚未更新数据";
+        }
+        renderDashboard(analysis, chapters, summary, bookName);
+      } else {
         document.getElementById("entryHint").textContent = "分析数据为空，请确认已采集过数据";
         document.getElementById("entryHint").style.color = "#e74c3c";
       }
@@ -1016,6 +1128,15 @@ async function startAnalysis() {
     document.getElementById("entryHint").textContent = "分析请求失败: " + e.message;
     document.getElementById("entryHint").style.color = "#e74c3c";
   }
+}
+
+// ── Start Analysis (entry point from UI buttons) ──
+async function startAnalysis() {
+  const book = document.getElementById("bookSelect").value;
+  if (!book) return;
+  currentAnalysisBook = book;
+  curvePage = 0;
+  await refreshAndAnalyze(book);
 }
 
 // ── Render Dashboard ──
@@ -1061,6 +1182,7 @@ function renderDashboard(a, ch, summary, bookName) {
   // Stage banner
   const stCf = {
     verification: ["stage-verif","⏳","验证期","平台正在用小流量测试本书的留存能力。验证期结束后，根据核心指标表现决定是否开放推荐流量。"],
+    recommendation: ["stage-recommend","🚀","推荐期","已通过验证期，平台正在主动推荐引流。此阶段追读率和读完率直接影响推荐位的持续时间和质量。"],
     signed: ["stage-signed","✅","已签约","已通过验证，获得平台推荐资源。关注推荐流量占比和付费转化。"],
     finished: ["stage-finished","🏁","已完结","作品已完本，享受完本推荐窗口和长尾搜索流量。"],
     ongoing: ["stage-ongoing","📖","连载中","正常连载阶段。保持日更节奏，关注读完率和推荐流量变化。"]
@@ -1074,6 +1196,19 @@ function renderDashboard(a, ch, summary, bookName) {
         <div style="font-size:12px;opacity:0.7;margin-top:2px">首发 ${a.daysSinceFirstPublish||"?"} 天 · 数据覆盖 ${q.dataDays||0} 天 · 日均 ${cm(q.avgDailyWords||0)} 字</div>
       </div>
     </div>`;
+
+  // ── Platform Staleness Warning ──
+  if (a._platformStale) {
+    const staleMsg = a._platformMessage || "平台尚未更新数据";
+    document.getElementById("stageBanner").innerHTML += `
+      <div style="margin-top:8px;padding:10px 16px;background:#fff5f5;border:1px solid #fecaca;border-radius:8px;display:flex;align-items:center;gap:8px">
+        <span style="font-size:20px">⚠️</span>
+        <div>
+          <div style="font-weight:600;color:#dc2626;font-size:13px">平台尚未更新数据</div>
+          <div style="font-size:12px;color:#991b1b;opacity:0.8">${escHtml(staleMsg)}。番茄平台数据通常在每日12:00后更新，请届时重新采集。</div>
+        </div>
+      </div>`;
+  }
 
   // ── Data Freshness Bar ──
   const freshness = a.dataFreshness || {};

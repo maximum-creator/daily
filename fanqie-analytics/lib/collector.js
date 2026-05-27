@@ -279,7 +279,7 @@ async function collectDashboard(page) {
       if (lines[i].trim() === currentBook) {
         for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
           const l = lines[j].trim();
-          if (l.includes("连载中") || l.includes("已完结") || l.includes("已签约") || l.includes("审核中") || l.includes("验证中")) {
+          if (l.includes("连载中") || l.includes("已完结") || l.includes("已签约") || l.includes("审核中") || l.includes("验证中") || l.includes("推荐中")) {
             status = l; break;
           }
         }
@@ -322,7 +322,7 @@ async function collectDashboard(page) {
           const name = nameEl?.textContent?.trim() || "";
           const full = item.textContent?.trim() || "";
           const afterName = full.slice(full.indexOf(name) + name.length).trim();
-          const status = afterName.match(/验证中|审核中|连载中|已签约|已完结|已下架/)?.[0] || "";
+          const status = afterName.match(/推荐中|验证中|审核中|连载中|已签约|已完结|已下架/)?.[0] || "";
           const ranking = afterName.match(/第\d+名|未上榜|上榜/)?.[0] || "";
           return { name, selected: item.classList.contains("selected"), status, ranking };
         });
