@@ -242,15 +242,17 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
     <!-- Book Selector (hidden until collection done) -->
     <div class="selector-card" id="bookSelectCard" style="display:none">
       <label>选择作品</label>
-      <select id="bookSelect">
+      <select id="bookSelect" onchange="onBookChange()">
         <option value="">-- 请选择一本书籍 --</option>
       </select>
+      <div style="font-size:11px;margin-top:3px" id="bookDataAge"></div>
       <div style="display:flex;gap:8px;margin:8px 0">
         <button class="btn-analyze" id="dailyBtn" disabled onclick="quickAnalysis('daily')" style="font-size:13px">📅 昨日快照</button>
         <button class="btn-analyze" id="weeklyBtn" disabled onclick="quickAnalysis('weekly')" style="font-size:13px;background:linear-gradient(135deg,#667eea,#764ba2)">📊 近七日评估</button>
       </div>
-      <div class="btn-row">
+      <div class="btn-row" style="gap:8px">
         <button class="btn-analyze" id="analyzeBtn" disabled onclick="startAnalysis()" style="font-size:14px">🔬 完整智能分析</button>
+        <button class="btn-analyze" id="refreshBtn" onclick="oneClickRefresh()" style="font-size:13px;background:linear-gradient(135deg,#27ae60,#2ecc71)">🔄 一键刷新数据</button>
       </div>
     </div>
   </div>
@@ -540,15 +542,62 @@ async function scanBooks() {
     }
 
     renderBookChecklist();
+    updateSelectedCount();
     btn.style.display = "none";
     document.getElementById("startCollectBtn").style.display = "block";
-    document.getElementById("preCollectHint").textContent = `已扫描 ${scannedBooks.length} 部作品，请勾选要采集的`;
-    updateSelectedCount();
+    document.getElementById("preCollectHint").textContent = `已扫描 ${scannedBooks.length} 部作品，自动开始采集…`;
+    // P2: Auto-collect after scan — save user one click
+    startCollection();
   } catch (e) {
     document.getElementById("preCollectHint").textContent = `网络错误：${e.message}`;
     btn.textContent = "🔍 重新扫描";
     btn.disabled = false;
   }
+}
+
+async function oneClickRefresh() {
+  const btn = document.getElementById("refreshBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ 扫描中…";
+
+  // Reset to pre-collect UI
+  document.getElementById("dashboard").classList.remove("active");
+  document.getElementById("entryArea").style.display = "block";
+  document.getElementById("bookSelectCard").style.display = "none";
+  document.getElementById("preCollectCard").style.display = "block";
+  document.getElementById("scanBooksBtn").style.display = "block";
+  document.getElementById("startCollectBtn").style.display = "none";
+
+  try {
+    const r = await fetch(API + "/books/scan", {
+      method: "POST",
+      headers: { Authorization: AUTH, "Content-Type": "application/json" }
+    });
+    const j = await r.json();
+    if (j.code !== 0) {
+      document.getElementById("preCollectHint").textContent = `刷新失败：${j.message}`;
+      btn.textContent = "🔄 一键刷新数据";
+      btn.disabled = false;
+      return;
+    }
+    scannedBooks = j.data.novels || [];
+    if (scannedBooks.length === 0) {
+      document.getElementById("preCollectHint").textContent = "未找到任何作品";
+      btn.textContent = "🔄 一键刷新数据";
+      btn.disabled = false;
+      return;
+    }
+    renderBookChecklist();
+    updateSelectedCount();
+    document.getElementById("scanBooksBtn").style.display = "none";
+    document.getElementById("startCollectBtn").style.display = "block";
+    document.getElementById("preCollectHint").textContent = `已扫描 ${scannedBooks.length} 部作品，自动开始采集…`;
+    await startCollection();
+  } catch (e) {
+    document.getElementById("preCollectHint").textContent = `网络错误：${e.message}`;
+  }
+  btn.textContent = "🔄 一键刷新数据";
+  btn.disabled = false;
 }
 
 function renderBookChecklist() {
@@ -761,6 +810,7 @@ function finishCollection(collectResult, btn, overlay) {
       : `采集异常：${collectResult?.message || '未知错误'}`;
 
     document.getElementById("sysCheckCard").style.display = "none";
+    document.getElementById("preCollectCard").style.display = "none";
     document.getElementById("bookSelectCard").style.display = "block";
     loadBooks();
   }, 600);
@@ -772,15 +822,45 @@ async function loadBooks() {
   sel.innerHTML = '<option value="">-- 请选择一本书籍 --</option>';
   if (books && books.length > 0) {
     books.forEach(b => {
-      sel.innerHTML += `<option value="${b.name}">${b.name}（${b.totalChapters || 0}章 · ${(b.cumulativeWords || 0).toLocaleString()}字）</option>`;
+      const dateTag = b.latestDate ? ` · ${b.latestDate}` : '';
+      sel.innerHTML += `<option value="${b.name}" data-date="${b.latestDate || ''}">${b.name}（${b.totalChapters || 0}章${dateTag}）</option>`;
     });
-    sel.onchange = () => {
-      const hasVal = !!sel.value;
-      document.getElementById("analyzeBtn").disabled = !hasVal;
-      document.getElementById("dailyBtn").disabled = !hasVal;
-      document.getElementById("weeklyBtn").disabled = !hasVal;
-    };
+    sel.onchange = () => onBookChange();
   }
+}
+
+function onBookChange() {
+  const sel = document.getElementById("bookSelect");
+  const hasVal = !!sel.value;
+  document.getElementById("analyzeBtn").disabled = !hasVal;
+  document.getElementById("dailyBtn").disabled = !hasVal;
+  document.getElementById("weeklyBtn").disabled = !hasVal;
+  updateBookDataAge();
+}
+
+function updateBookDataAge() {
+  const sel = document.getElementById("bookSelect");
+  const opt = sel.selectedOptions[0];
+  const date = opt?.dataset?.date || '';
+  const el = document.getElementById("bookDataAge");
+  if (!date) { el.innerHTML = ''; return; }
+
+  const d = new Date(date);
+  const now = new Date();
+  const diffMs = now - d;
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  const todayStr = now.toISOString().slice(0, 10);
+
+  let color, label;
+  if (date === todayStr) {
+    color = '#27ae60'; label = diffHours < 1 ? '● 刚采集' : `● 今日数据 · ${diffHours}小时前`;
+  } else if (diffDays === 1) {
+    color = '#e67e22'; label = '● 昨日数据 · 需刷新';
+  } else {
+    color = '#e74c3c'; label = `● ${diffDays}天前 · 强烈建议刷新`;
+  }
+  el.innerHTML = `<span style="color:${color};font-weight:500">${label}</span>`;
 }
 
 // ── Quick Analysis (daily/weekly) ──

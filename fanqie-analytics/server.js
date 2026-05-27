@@ -2145,6 +2145,55 @@ app.listen(PORT, () => {
   };
   startScheduler(tenants, scheduledCollect);
 
+  // ── Auto-collect on startup ──
+  // If today has no data, or data was collected before noon (and it's now after noon),
+  // trigger an immediate collection to ensure fresh data.
+  (async () => {
+    const now = new Date();
+    const hour = now.getHours();
+    const todayStr = today();
+
+    for (const [tenantId, tenant] of Object.entries(tenants)) {
+      if (!hasProfile(tenantId)) continue;
+      if (collecting.has(tenantId)) continue;
+
+      const todayDir = path.join(DATA_DIR, tenantId, todayStr);
+      if (!fs.existsSync(todayDir)) {
+        console.log(`🔄 ${tenant.name}: 今日无数据，启动时自动采集…`);
+        scheduledCollect(tenantId).catch(e =>
+          console.error(`🔄 启动采集失败 [${tenantId}]: ${e.message}`));
+        continue;
+      }
+
+      // Check if existing data is from before noon (stale after platform refresh)
+      if (hour >= 12) {
+        let newestMtime = 0;
+        try {
+          for (const bookDir of fs.readdirSync(todayDir)) {
+            const sp = path.join(todayDir, bookDir, "summary.json");
+            if (fs.existsSync(sp)) {
+              newestMtime = Math.max(newestMtime, fs.statSync(sp).mtimeMs);
+            }
+          }
+        } catch (e) { /* fall through to collect */ }
+
+        const collectedBeforeNoon = newestMtime > 0 &&
+          new Date(newestMtime).getHours() < 12;
+
+        if (collectedBeforeNoon || newestMtime === 0) {
+          console.log(`🔄 ${tenant.name}: 旧数据为上午采集，平台已更新，自动刷新…`);
+          scheduledCollect(tenantId).catch(e =>
+            console.error(`🔄 启动采集失败 [${tenantId}]: ${e.message}`));
+        } else {
+          const ageMin = newestMtime > 0 ? Math.round((Date.now() - newestMtime) / 60000) : 0;
+          console.log(`📦 ${tenant.name}: 今日数据已新鲜（${ageMin}分钟前采集），跳过启动采集`);
+        }
+      } else {
+        console.log(`📦 ${tenant.name}: 今日已有数据（上午时段），跳过启动采集`);
+      }
+    }
+  })();
+
   console.log("\n   示例请求:");
   console.log(`   curl -H "Authorization: Bearer fa_sk_demo_001" http://localhost:${PORT}/api/v1/summary`);
 });

@@ -20,16 +20,38 @@ function localISO() {
 // ── Extract data update timestamp from page text ──────────────────
 // 番茄不同数据模块的更新时间不同（收益通常比阅读晚1-2小时）
 function extractUpdateTime(pageText) {
-  const patterns = [
-    /数据更新时间[：:]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/,
-    /更新时间[：:]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/,
-    /统计截止[：:]\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})/,
-    /(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s*更新/,
+  // Labeled patterns — most specific first
+  const labeled = [
+    /数据更新[时刻]间[：:\s]+(\d{4}[-\/]\d{2}[-\/]\d{2}\s+\d{2}:\d{2}(?::\d{2})?)/,
+    /更新[时刻]间[：:\s]+(\d{4}[-\/]\d{2}[-\/]\d{2}\s+\d{2}:\d{2}(?::\d{2})?)/,
+    /统计截止[：:\s]+(\d{4}[-\/]\d{2}[-\/]\d{2}\s+\d{2}:\d{2}(?::\d{2})?)/,
+    /(\d{4}[-\/]\d{2}[-\/]\d{2}\s+\d{2}:\d{2}(?::\d{2})?)\s*更新/,
+    /更新[：:\s]+(\d{4}[-\/]\d{2}[-\/]\d{2}\s+\d{2}:\d{2}(?::\d{2})?)/,
+    // Shorter labels
+    /截至[：:\s]+(\d{4}[-\/]\d{2}[-\/]\d{2}\s+\d{2}:\d{2}(?::\d{2})?)/,
+    /截止[：:\s]+(\d{4}[-\/]\d{2}[-\/]\d{2}\s+\d{2}:\d{2}(?::\d{2})?)/,
   ];
-  for (const p of patterns) {
+  for (const p of labeled) {
     const m = pageText.match(p);
     if (m) return m[1];
   }
+
+  // Fallback: find any full datetime in first N chars, preferring those
+  // near "更新"/"时间" keywords within 50 chars
+  const dtPattern = /(\d{4}[-\/]\d{2}[-\/]\d{2}\s+\d{2}:\d{2}(?::\d{2})?)/g;
+  let m;
+  const candidates = [];
+  while ((m = dtPattern.exec(pageText)) !== null) {
+    const idx = m.index;
+    const nearby = pageText.slice(Math.max(0, idx - 50), idx);
+    const score = (nearby.includes("更新") ? 3 : 0) + (nearby.includes("时间") ? 2 : 0) + (nearby.includes("数据") ? 1 : 0);
+    candidates.push({ time: m[1], score, idx });
+  }
+  if (candidates.length > 0) {
+    candidates.sort((a, b) => b.score - a.score || a.idx - b.idx);
+    return candidates[0].time;
+  }
+
   return null;
 }
 
@@ -690,7 +712,7 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
   // 1. Works data
   try { results.worksData = await collectWorksData(page); } catch (e) { /* continue */ }
   try {
-    const t = await page.evaluate(() => document.body?.innerText?.slice(0, 1500) || "");
+    const t = await page.evaluate(() => document.body?.innerText?.slice(0, 5000) || "");
     freshness.worksData = extractUpdateTime(t);
   } catch (e) { /* skip */ }
 
@@ -794,7 +816,7 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
 
     results.quality = await collectQuality(page, qualityApiCalls);
     try {
-      const t = await page.evaluate(() => document.body?.innerText?.slice(0, 1000) || "");
+      const t = await page.evaluate(() => document.body?.innerText?.slice(0, 5000) || "");
       freshness.quality = extractUpdateTime(t);
     } catch (e) { /* skip */ }
   } catch (e) { /* continue */ }
@@ -836,7 +858,7 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
       results.traffic = { sources: {}, isEmpty: true };
     }
     try {
-      const t = await page.evaluate(() => document.body?.innerText?.slice(0, 1000) || "");
+      const t = await page.evaluate(() => document.body?.innerText?.slice(0, 5000) || "");
       freshness.traffic = extractUpdateTime(t);
     } catch (e) { /* skip */ }
   } catch (e) { /* continue */ }
@@ -867,7 +889,7 @@ async function collectForBook(page, bookName, bookStatus = "", fastMode = false)
   // Also try page text as fallback for the timestamp label
   if (!freshness.revenue) {
     try {
-      const t = await page.evaluate(() => document.body?.innerText?.slice(0, 1000) || "");
+      const t = await page.evaluate(() => document.body?.innerText?.slice(0, 5000) || "");
       freshness.revenue = extractUpdateTime(t);
     } catch (e) { /* skip */ }
   }
