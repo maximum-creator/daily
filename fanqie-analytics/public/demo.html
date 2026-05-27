@@ -222,16 +222,6 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
         <span style="flex:1"></span>
         <span id="selectedCount" style="font-size:12px;color:#888"></span>
       </div>
-      <div style="display:flex;align-items:center;gap:16px;margin:8px 0 12px;font-size:13px">
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#1a1a2e">
-          <input type="radio" name="collectMode" value="standard" checked onchange="updateCollectMode()">
-          <span>标准采集</span><span style="font-size:11px;color:#888">（含章节明细）</span>
-        </label>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;color:#1a1a2e">
-          <input type="radio" name="collectMode" value="fast" onchange="updateCollectMode()">
-          <span>⚡ 快速采集</span><span style="font-size:11px;color:#888">（仅核心指标，约快3-5倍）</span>
-        </label>
-      </div>
       <div class="btn-row">
         <button class="btn-analyze" id="scanBooksBtn" onclick="scanBooks()">🔍 扫描作品列表</button>
         <button class="btn-analyze" id="startCollectBtn" style="display:none" onclick="startCollection()">📡 开始采集选中作品</button>
@@ -503,12 +493,6 @@ function pollLogin() {
   }, 3000);
 }
 
-// Collect mode toggle
-function updateCollectMode() {
-  const fastEl = document.querySelector('input[name="collectMode"][value="fast"]');
-  window._collectFastMode = fastEl?.checked || false;
-}
-
 // ── Phase 1.8: Scan & Select Books ──
 let scannedBooks = [];
 
@@ -673,9 +657,6 @@ async function startCollection() {
     }).filter(Boolean);
     if (selected.length > 0 && selected.length < scannedBooks.length) {
       url += "&books=" + selected.join(",");
-    }
-    if (window._collectFastMode) {
-      url += "&fast=true";
     }
     const r = await fetch(url, {
       method: "POST",
