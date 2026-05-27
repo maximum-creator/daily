@@ -306,6 +306,7 @@ body{font-family:"Microsoft YaHei","PingFang SC","Helvetica Neue",sans-serif;bac
       <h3>📉 逐章读完率曲线（点击异常章高亮）</h3>
       <div id="completionCurve" style="overflow-x:auto;padding:8px 0"></div>
       <div id="curveLegend" style="font-size:11px;color:#888;text-align:center;margin-top:4px"></div>
+      <div id="curvePaginator" style="text-align:center;margin-top:8px"></div>
     </div>
 
     <!-- Funnel + Pacing + Benchmarks -->
@@ -354,6 +355,8 @@ async function call(path) {
 
 // ── Phase 1: System Check ──
 let currentTenant = null;
+let curvePage = 0;
+const CURVE_PAGE_SIZE = 20;
 
 async function checkSystem() {
   let health, tenant;
@@ -782,11 +785,13 @@ async function loadBooks() {
 
 // ── Quick Analysis (daily/weekly) ──
 let currentAnalysisBook = "";
+let _dashA = null, _dashCh = null, _dashSummary = null, _dashBookName = "";
 
 async function quickAnalysis(mode) {
   const book = document.getElementById("bookSelect").value;
   if (!book) return;
   currentAnalysisBook = book;
+  curvePage = 0;
 
   if (mode === "full") {
     document.getElementById("quickResult").style.display = "none";
@@ -931,6 +936,7 @@ async function startAnalysis() {
 
 // ── Render Dashboard ──
 function renderDashboard(a, ch, summary, bookName) {
+  _dashA = a; _dashCh = ch; _dashSummary = summary; _dashBookName = bookName;
   document.getElementById("entryArea").style.display = "none";
   document.getElementById("dashboard").classList.add("active");
 
@@ -1098,33 +1104,47 @@ function renderDashboard(a, ch, summary, bookName) {
   const curve = q.completionCurve || [];
   const anomalyChapters = new Set((q.anomalies || []).filter(a => a.type === "completion_drop").map(a => a.chapter));
   const bigDrop = q.biggestDrop;
-  const maxRate = Math.max(...curve.map(c => c.completionRate), 1);
 
   if (curve.length > 0) {
-    const barWd = Math.max(8, Math.min(24, Math.floor(900 / curve.length)));
+    const totalPages = Math.ceil(curve.length / CURVE_PAGE_SIZE);
+    if (curvePage >= totalPages) curvePage = 0;
+
+    const start = curvePage * CURVE_PAGE_SIZE;
+    const pageCurve = curve.slice(start, start + CURVE_PAGE_SIZE);
+    const maxRate = Math.max(...pageCurve.map(c => c.completionRate), 1);
+    const barWd = Math.max(18, Math.min(40, Math.floor(700 / pageCurve.length)));
+
     document.getElementById("completionCurve").innerHTML =
-      `<div style="display:flex;align-items:flex-end;gap:1px;height:160px;min-width:${curve.length * (barWd + 1)}px;padding:0 4px">
-        ${curve.map(c => {
-          const h = Math.max(2, (c.completionRate / maxRate) * 150);
+      `<div style="display:flex;align-items:flex-end;gap:3px;height:160px;padding:0 4px 0 8px;justify-content:center">
+        ${pageCurve.map(c => {
+          const h = Math.max(2, (c.completionRate / maxRate) * 130);
           const isAnomaly = anomalyChapters.has(c.chapter);
           const isDropTarget = bigDrop && c.chapter === bigDrop.to.chapter;
           const bg = isAnomaly ? '#e74c3c' : isDropTarget ? '#e67e22' : 'linear-gradient(180deg,#667eea,#764ba2)';
           const border = isDropTarget ? '1px solid #e67e22' : 'none';
-          return `<div title="第${c.chapter}章${c.title?'「'+c.title+'」':''}&#10;读完率: ${(c.completionRate||0).toFixed(1)}%&#10;字数: ${c.wordCount||'?'}"
-            style="flex-shrink:0;width:${barWd}px;height:${h}px;background:${bg};border-radius:2px 2px 0 0;cursor:pointer;transition:opacity .2s;${border};opacity:${isAnomaly||isDropTarget?1:0.7}"
-            onmouseover="this.style.opacity='1';this.style.transform='scaleY(1.05)'"
-            onmouseout="this.style.opacity='${isAnomaly||isDropTarget?1:0.7}';this.style.transform='scaleY(1)'"></div>`;
+          return `<div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;width:${barWd}px">
+            <div title="第${c.chapter}章${c.title?'「'+c.title+'」':''}&#10;读完率: ${(c.completionRate||0).toFixed(1)}%&#10;字数: ${c.wordCount||'?'}"
+              style="width:100%;height:${h}px;background:${bg};border-radius:2px 2px 0 0;cursor:pointer;transition:opacity .2s;${border};opacity:${isAnomaly||isDropTarget?1:0.7};margin-bottom:4px"
+              onmouseover="this.style.opacity='1';this.style.transform='scaleY(1.05)'"
+              onmouseout="this.style.opacity='${isAnomaly||isDropTarget?1:0.7}';this.style.transform='scaleY(1)'"></div>
+            <div style="font-size:9px;color:#999;white-space:nowrap;line-height:1">第${c.chapter}</div>
+          </div>`;
         }).join("")}
       </div>`;
+
     const anomalyCount = anomalyChapters.size;
+    const endIdx = Math.min(start + CURVE_PAGE_SIZE, curve.length);
     document.getElementById("curveLegend").innerHTML =
       `<span style="color:#667eea">■ 正常</span> &nbsp;
        ${bigDrop ? `<span style="color:#e67e22">■ 最大跌幅点（第${bigDrop.from.chapter}→第${bigDrop.to.chapter}章，跌${bigDrop.drop.toFixed(1)}%）</span> &nbsp;` : ''}
        ${anomalyCount > 0 ? `<span style="color:#e74c3c">■ 读完率异常（${anomalyCount}章）</span>` : ''}
-       &nbsp; 鼠标悬停查看详情`;
+       &nbsp; 第${start+1}-${endIdx}章 / 共${curve.length}章`;
+
+    renderCurvePaginator(curvePage, totalPages);
   } else {
     document.getElementById("completionCurve").innerHTML = `<div class="empty-note">暂无逐章数据</div>`;
     document.getElementById("curveLegend").innerHTML = "";
+    document.getElementById("curvePaginator").innerHTML = "";
   }
 
   // ── Funnel Visualization ──
@@ -1173,6 +1193,46 @@ function renderDashboard(a, ch, summary, bookName) {
   `;
 
   window.scrollTo({top:0,behavior:"smooth"});
+}
+
+function goCurvePage(p) {
+  if (_dashA) {
+    curvePage = p;
+    renderDashboard(_dashA, _dashCh, _dashSummary, _dashBookName);
+  }
+}
+
+function renderCurvePaginator(current, total) {
+  if (total <= 1) {
+    document.getElementById("curvePaginator").innerHTML = "";
+    return;
+  }
+
+  const pages = [];
+  let pStart = Math.max(0, current - 2);
+  let pEnd = Math.min(total, pStart + 5);
+  if (pEnd - pStart < 5) pStart = Math.max(0, pEnd - 5);
+
+  for (let i = pStart; i < pEnd; i++) pages.push(i);
+
+  const btn = (active) =>
+    `display:inline-flex;align-items:center;justify-content:center;min-width:32px;height:32px;padding:0 8px;margin:0 3px;` +
+    `border:1px solid ${active ? "#e67e22" : "#ddd"};border-radius:4px;` +
+    `background:${active ? "#e67e22" : "#f5f5f5"};color:${active ? "#fff" : "#666"};` +
+    `font-size:13px;cursor:${active ? "default" : "pointer"};transition:all .15s;font-family:inherit;` +
+    `user-select:none`;
+
+  document.getElementById("curvePaginator").innerHTML =
+    `<div style="display:flex;align-items:center;justify-content:center;gap:2px;font-family:inherit">
+      <button onclick="goCurvePage(${current - 1})" ${current === 0 ? "disabled" : ""}
+        style="${btn(false)};opacity:${current === 0 ? 0.4 : 1}">‹</button>
+      ${pages.map(p => p === current
+        ? `<span style="${btn(true)}">${p + 1}</span>`
+        : `<button onclick="goCurvePage(${p})" style="${btn(false)}">${p + 1}</button>`
+      ).join("")}
+      <button onclick="goCurvePage(${current + 1})" ${current >= total - 1 ? "disabled" : ""}
+        style="${btn(false)};opacity:${current >= total - 1 ? 0.4 : 1}">›</button>
+    </div>`;
 }
 
 function goBack() {
