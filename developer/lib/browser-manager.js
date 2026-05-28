@@ -73,17 +73,16 @@ async function launchContext(tenantId) {
   return context;
 }
 
-// Close all restored pages from a persistent context except keep one blank page.
-// launchPersistentContext restores ALL previously open tabs — this prevents
-// the user from seeing dozens of old pages reload on every login.
+// Close ALL restored pages from a persistent context.
+// launchPersistentContext restores EVERY previously-open tab from the
+// profile's session storage — this causes visible "page explosion" where
+// the user sees 5-10 tabs flash open. Close them all and let callers
+// create exactly what they need.
 async function cleanupPages(context) {
   const pages = context.pages();
-  if (pages.length <= 1) return;
-  for (let i = pages.length - 1; i >= 1; i--) {
+  for (let i = pages.length - 1; i >= 0; i--) {
     await pages[i].close().catch(() => {});
   }
-  // Navigate the remaining page to blank to avoid loading old content
-  await pages[0].goto("about:blank", { waitUntil: "commit", timeout: 3000 }).catch(() => {});
 }
 
 async function injectCookies(tenantId, context) {
@@ -136,6 +135,13 @@ async function getPage(tenantId) {
   // Create headed context — anti-bot bypass requires visible browser
   const dir = profileDir(tenantId);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  // Clean stale Default/ to prevent cookie bloat in SQLite
+  // (launchPersistentContext loads SQLite cookies, injectCookies adds JSON ones → duplicates)
+  const defaultDir = path.join(dir, "Default");
+  if (fs.existsSync(defaultDir)) {
+    fs.rmSync(defaultDir, { recursive: true });
+  }
 
   // If another context is using this profile (e.g., login in progress),
   // retry with backoff to avoid file-lock conflict
