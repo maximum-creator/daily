@@ -6,22 +6,106 @@ const fs = require("fs");
 const path = require("path");
 const { normalizeName, localISO, today, sanitize, parsePrice, parseSales, classifyStore } = require("./utils");
 
+// ── JSON 数据提取 ────────────────────────────────────────────────
+
+function extractFromDyJson(data) {
+  const results = [];
+  if (!data || typeof data !== "object") return results;
+
+  const items = findArrayWith(data, "price") ||
+                findArrayWith(data, "productId") ||
+                findArrayWith(data, "spuId") ||
+                data?.data?.items ||
+                data?.items ||
+                data?.result?.items ||
+                data?.data?.list ||
+                data?.list ||
+                [];
+  if (!Array.isArray(items)) return results;
+
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const name = (item.title || item.name || item.productName || item.goodsName || "").trim();
+    if (!name || name.length < 3) continue;
+    results.push({
+      name,
+      price: String(item.price || item.salePrice || item.displayPrice || item.minPrice || ""),
+      sales: String(item.sales || item.soldCount || item.sellCount || item.salesVolume || ""),
+      shop: (item.shopName || item.storeName || item.sellerName || item.shop || "").trim(),
+      goodsId: String(item.productId || item.spuId || item.id || item.goodsId || ""),
+      imgSrc: (item.image || item.cover || item.thumb || item.img || ""),
+    });
+  }
+  return results;
+}
+
+function findArrayWith(obj, key) {
+  if (!obj || typeof obj !== "object") return null;
+  if (Array.isArray(obj) && obj.length > 0 && typeof obj[0] === "object") {
+    if (obj[0][key] !== undefined) return obj;
+  }
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (Array.isArray(v) && v.length > 0 && typeof v[0] === "object") {
+      if (v[0][key] !== undefined) return v;
+    }
+    if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+      const found = findArrayWith(v, key);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
 // ── 搜索抖音商品 ──────────────────────────────────────────────
 
 async function searchDouyinProducts(page, brandName, maxPages = 1) {
   const allProducts = [];
 
-  for (let pg = 1; pg <= maxPages; pg++) {
-    const searchUrl = `https://mall.douyin.com/search?keyword=${encodeURIComponent(brandName)}&page=${pg}`;
-
-    try {
-      await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-    } catch (e) {
-      console.log(`[douyin] pg${pg} 导航失败: ${e.message}`);
-      break;
+  // Intercept XHR responses to capture Douyin's internal search API data
+  const apiProducts = [];
+  const onResponse = async (response) => {
+    const url = response.url();
+    // Douyin search API patterns
+    if (url.includes("douyin.com") && (url.includes("search") || url.includes("product") || url.includes("goods") || url.includes("item"))) {
+      try {
+        const ct = response.headers()["content-type"] || "";
+        if (ct.includes("json")) {
+          const data = await response.json();
+          const extracted = extractFromDyJson(data);
+          if (extracted.length > 0) apiProducts.push(...extracted);
+        }
+      } catch (e) { /* ignore parse errors */ }
     }
+  };
+  page.on("response", onResponse);
 
-    await page.waitForTimeout(4000 + Math.random() * 2000);
+  for (let pg = 1; pg <= maxPages; pg++) {
+    // Try mall.douyin.com first, fall back to douyin.com search
+    let searchUrl = `https://mall.douyin.com/search?keyword=${encodeURIComponent(brandName)}&page=${pg}`;
+    let usedFallback = false;
+
+    const tryNavigate = async (url) => {
+      try {
+        await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
+        return true;
+      } catch (e) {
+        console.log(`[douyin] pg${pg} 导航失败 (${url.slice(0,50)}): ${e.message}`);
+        return false;
+      }
+    };
+
+    if (!(await tryNavigate(searchUrl))) {
+      // Fallback URL per Qwen suggestion
+      if (pg === 1) {
+        searchUrl = `https://www.douyin.com/search/${encodeURIComponent(brandName)}?aid=6383&type=general`;
+        console.log(`[douyin] pg${pg} 尝试备选URL: douyin.com`);
+        if (!(await tryNavigate(searchUrl))) break;
+        usedFallback = true;
+      } else {
+        break;
+      }
+    }
 
     const currentUrl = page.url();
     const pageTitle = await page.title().catch(() => "");
@@ -34,6 +118,34 @@ async function searchDouyinProducts(page, brandName, maxPages = 1) {
       break;
     }
 
+    // Wait for SPA to render — Douyin loads products via JS after initial shell
+    // Try to detect when real product data is available in the DOM or JS state
+    const dataReady = await page.waitForFunction(() => {
+      // Check for inline JSON data first
+      const state = window.__INITIAL_STATE__ || window.__NUXT__ || window.__DATA__ || window.__SSR_DATA__;
+      if (state) {
+        const items = state?.searchResult?.items
+          || state?.search?.result?.items
+          || state?.data?.searchResult
+          || state?.result?.items
+          || state?.products
+          || state?.goodsList;
+        if (items && items.length > 0) return true;
+      }
+      // Fallback: check if product cards have rendered in DOM
+      const cards = document.querySelectorAll("[data-spu-id], .product-card, [class*='productCard'], [class*='goodsCard']");
+      if (cards.length >= 3) return true;
+      // Check body text has meaningful price data (not the empty shell)
+      const body = document.body?.innerText || "";
+      if (body.length > 1000 && body.includes("¥")) return true;
+      return false;
+    }, { timeout: 15000 }).catch(() => false);
+
+    if (!dataReady) {
+      console.log(`[douyin] pg${pg} SPA数据未就绪，额外等待...`);
+    }
+    await page.waitForTimeout(2000);
+
     // Scroll for lazy loading
     await page.evaluate(async () => {
       for (let y = 200; y < 3000; y += 400) {
@@ -44,27 +156,49 @@ async function searchDouyinProducts(page, brandName, maxPages = 1) {
     });
     await page.waitForTimeout(2000);
 
-    // Strategy A: Inline JSON from SSR (Nuxt/initial state)
+    // Strategy A: Inline JSON from SSR/SPA state
     const inlineProducts = await page.evaluate(() => {
       try {
-        // Try various Douyin SSR data paths
-        const state = window.__INITIAL_STATE__ || window.__NUXT__ || window.__DATA__;
+        const state = window.__INITIAL_STATE__ || window.__NUXT__ || window.__DATA__ || window.__SSR_DATA__ || window.SSR_DATA;
         if (!state) return [];
-        const items = state?.searchResult?.items
+
+        // Broad search for product arrays — Douyin nests data differently per page version
+        let items = state?.searchResult?.items
           || state?.search?.result?.items
           || state?.data?.searchResult
           || state?.result?.items
           || state?.products
           || state?.goodsList
-          || [];
+          || state?.state?.search?.result?.items
+          || state?.state?.searchResult?.items;
+
+        // Deep search: walk the state tree for arrays containing price/title fields
+        if (!items || !Array.isArray(items) || items.length === 0) {
+          const walk = (obj, depth) => {
+            if (!obj || typeof obj !== "object" || depth > 6) return null;
+            for (const k of Object.keys(obj)) {
+              const v = obj[k];
+              if (Array.isArray(v) && v.length >= 2 && v[0] && typeof v[0] === "object") {
+                if (v[0].price !== undefined || v[0].title || v[0].productName) return v;
+              }
+              if (typeof v === "object" && v !== null) {
+                const found = walk(v, depth + 1);
+                if (found) return found;
+              }
+            }
+            return null;
+          };
+          items = walk(state, 0) || [];
+        }
+
         if (!Array.isArray(items) || items.length === 0) return [];
         return items.map(item => ({
-          name: (item.title || item.name || item.productName || "").trim(),
-          price: String(item.price || item.salePrice || item.displayPrice || ""),
-          sales: String(item.sales || item.soldCount || item.sellCount || ""),
-          shop: (item.shopName || item.storeName || item.sellerName || "").trim(),
-          goodsId: String(item.productId || item.spuId || item.id || ""),
-          imgSrc: (item.image || item.cover || item.thumb || ""),
+          name: (item.title || item.name || item.productName || item.goodsName || "").trim(),
+          price: String(item.price || item.salePrice || item.displayPrice || item.minPrice || ""),
+          sales: String(item.sales || item.soldCount || item.sellCount || item.salesVolume || ""),
+          shop: (item.shopName || item.storeName || item.sellerName || item.shop || "").trim(),
+          goodsId: String(item.productId || item.spuId || item.id || item.goodsId || ""),
+          imgSrc: (item.image || item.cover || item.thumb || item.img || ""),
         }));
       } catch (e) { return []; }
     });
@@ -77,15 +211,19 @@ async function searchDouyinProducts(page, brandName, maxPages = 1) {
       continue;
     }
 
-    // Strategy B: DOM extraction
+    // Strategy B: DOM extraction (improved selectors)
     const domProducts = await page.evaluate(() => {
       const results = [];
       const seen = new Set();
 
+      // Broader selector set for Douyin's dynamic class names
       const selectors = [
-        "[data-spu-id]", ".product-card", ".search-result-item",
-        ".goods-card", "[class*='product']", "[class*='goods']",
-        ".card-item", "a[href*='product']",
+        "[data-spu-id]", "[data-product-id]", "[data-item-id]",
+        ".product-card", ".search-result-item", ".goods-card",
+        "[class*='product']", "[class*='goods']", "[class*='card']",
+        "a[href*='product']", "a[href*='goods']",
+        "[class*='search'] [class*='item']",
+        "li[class*='result']",
       ];
 
       for (const sel of selectors) {
@@ -93,7 +231,8 @@ async function searchDouyinProducts(page, brandName, maxPages = 1) {
         if (items.length === 0) continue;
         items.forEach(item => {
           const text = (item.textContent || "").trim();
-          if (text.length < 15 || text.length > 500) return;
+          if (text.length < 12 || text.length > 600) return;
+          // Must contain price indicator
           if (!/¥|￥|\d+\.?\d*/.test(text)) return;
 
           const key = text.replace(/\s+/g, "").slice(0, 40);
@@ -104,7 +243,8 @@ async function searchDouyinProducts(page, brandName, maxPages = 1) {
           const price = priceMatch ? priceMatch[1] : "";
           const priceIdx = text.indexOf("¥") >= 0 ? text.indexOf("¥") : text.indexOf("￥");
           const name = priceIdx > 0 ? text.substring(0, priceIdx).trim().slice(0, 120) : text.slice(0, 80);
-          const salesMatch = text.match(/([\d.]+万?)\s*(已售|销售|卖出|件)/);
+          const salesMatch = text.match(/([\d.]+万?)\s*(已售|销售|卖出|件|人)/);
+          const soldMatch = text.match(/已售\s*(\d+\.?\d*万?)/);
 
           const nameEl = item.querySelector(".title, .name, [class*='title'], [class*='name'], h3, h4");
           const priceEl = item.querySelector("[class*='price'], .price, .amount");
@@ -113,9 +253,9 @@ async function searchDouyinProducts(page, brandName, maxPages = 1) {
           results.push({
             name: (nameEl?.textContent || name).trim().slice(0, 120),
             price: (priceEl?.textContent || price || "").replace(/[¥￥]/g, "").trim(),
-            sales: salesMatch ? salesMatch[1] : "",
+            sales: soldMatch ? soldMatch[1] : (salesMatch ? salesMatch[1] : ""),
             shop: (shopEl?.textContent || "").trim(),
-            goodsId: item.getAttribute?.("data-spu-id") || item.getAttribute?.("data-id") || "",
+            goodsId: item.getAttribute?.("data-spu-id") || item.getAttribute?.("data-id") || item.getAttribute?.("data-product-id") || "",
             imgSrc: "",
           });
         });
@@ -129,6 +269,21 @@ async function searchDouyinProducts(page, brandName, maxPages = 1) {
     allProducts.push(...domProducts);
     if (domProducts.length < 20) break;
     await page.waitForTimeout(1500 + Math.random() * 1500);
+  }
+
+  // Clean up response listener
+  page.off("response", onResponse);
+
+  // Merge API-captured products (may be richer than inline/DOM)
+  if (apiProducts.length > allProducts.length) {
+    console.log(`[douyin] API拦截获得 ${apiProducts.length} 个商品 (优于inline/DOM的 ${allProducts.length})`);
+    const seen = new Set();
+    return apiProducts.filter(r => {
+      const key = (r.name || "").replace(/\s+/g, "").slice(0, 40);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   }
 
   // Deduplicate

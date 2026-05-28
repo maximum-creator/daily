@@ -17,6 +17,7 @@ function getBrowserOptions(headless) {
   return {
     headless,
     viewport: { width: 1280, height: 720 },
+    deviceScaleFactor: 1.5,
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     locale: "zh-CN",
@@ -58,19 +59,6 @@ async function initScript(context) {
       get: () => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     });
   });
-}
-
-async function launchContext(tenantId) {
-  const dir = profileDir(tenantId);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-  const context = await chromium.launchPersistentContext(dir, getBrowserOptions(true));
-  await initScript(context);
-
-  // Inject saved cookies
-  await injectCookies(tenantId, context);
-
-  return context;
 }
 
 // Close ALL restored pages from a persistent context.
@@ -115,40 +103,37 @@ async function injectCookies(tenantId, context) {
   console.log(`[cookies] 验证: 共${all.length}个, JD认证cookies: ${jdAuth.length}个 (${jdAuth.map(c=>c.name).join(",")})`);
 }
 
-async function getPage(tenantId) {
+async function getPage(tenantId, opts = {}) {
+  const headless = opts.headless !== undefined ? opts.headless : false;
   let entry = pool.get(tenantId);
 
   if (entry) {
     try {
-      // Re-inject cookies before use — the other platform may have logged in since
+      // Verify context is still alive
+      await entry.context.pages().catch(() => { throw new Error("context closed"); });
+      // Re-inject cookies from other platforms that may have logged in
       await injectCookies(tenantId, entry.context);
       const page = await entry.context.newPage();
       entry.busy = true;
       entry.pageCount++;
       return page;
     } catch (e) {
+      console.log(`[pool] context失效，重建: ${e.message}`);
       await entry.context.close().catch(() => {});
       pool.delete(tenantId);
     }
   }
 
-  // Create headed context — anti-bot bypass requires visible browser
+  // Create persistent context — rely on Playwright's native SQLite persistence
+  // for cookies. DO NOT delete Default/ — that destroys login state.
   const dir = profileDir(tenantId);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  // Clean stale Default/ to prevent cookie bloat in SQLite
-  // (launchPersistentContext loads SQLite cookies, injectCookies adds JSON ones → duplicates)
-  const defaultDir = path.join(dir, "Default");
-  if (fs.existsSync(defaultDir)) {
-    fs.rmSync(defaultDir, { recursive: true });
-  }
-
-  // If another context is using this profile (e.g., login in progress),
-  // retry with backoff to avoid file-lock conflict
+  // If another context is using this profile, retry with backoff
   let context;
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
-      context = await chromium.launchPersistentContext(dir, getBrowserOptions(false));
+      context = await chromium.launchPersistentContext(dir, getBrowserOptions(headless));
       break;
     } catch (e) {
       if (attempt < 4 && (e.message.includes("Target page") || e.message.includes("closed") || e.message.includes("session"))) {
@@ -162,9 +147,9 @@ async function getPage(tenantId) {
   if (!context) throw new Error("无法创建浏览器上下文：profile被占用");
 
   await initScript(context);
-  // Default/ is cleaned before launch → no restored tabs from previous sessions
+  // Inject JSON cookies as supplement for cross-platform sharing (does not override SQLite cookies)
   await injectCookies(tenantId, context);
-  // Close auto-created blank pages from launchPersistentContext, then create one clean page
+  // Close auto-created blank pages from launchPersistentContext
   await cleanupPages(context);
 
   entry = { context, pageCount: 0, busy: false };
@@ -172,6 +157,7 @@ async function getPage(tenantId) {
   entry.busy = true;
   entry.pageCount++;
   const page = await entry.context.newPage();
+  console.log(`[pool] 创建${headless ? "无头" : "有头"}上下文，tenant=${tenantId}`);
   return page;
 }
 
@@ -280,13 +266,12 @@ function markProfileReady(tenantId, platform) {
 }
 
 function getPlatformStatus(tenantId) {
-  // PDD doesn't require login — ready if tenant profile directory exists
   const hasDir = fs.existsSync(profileDir(tenantId));
   return {
     tmall: hasProfile(tenantId, "tmall") || hasProfile(tenantId),
     jd: hasProfile(tenantId, "jd"),
-    pdd: hasProfile(tenantId, "pdd") || hasDir,
-    douyin: hasProfile(tenantId, "douyin") || hasDir,
+    pdd: hasProfile(tenantId, "pdd") || (hasDir && hasSavedCookies(tenantId, "pdd")),
+    douyin: hasProfile(tenantId, "douyin") || (hasDir && hasSavedCookies(tenantId, "douyin")),
   };
 }
 
