@@ -184,6 +184,13 @@ async function startCollection() {
 // ── Progress Overlay ──
 let progressTimer = null;
 let progressStartTime = 0;
+let progressPollTimer = null;
+
+$("#btnCloseProgress").addEventListener("click", () => {
+  if (progressTimer) clearInterval(progressTimer);
+  if (progressPollTimer) clearTimeout(progressPollTimer);
+  $("#progressOverlay").classList.remove("active");
+});
 
 function showProgressOverlay() {
   $("#progressOverlay").classList.add("active");
@@ -265,9 +272,9 @@ async function pollProgress() {
     }
 
     // Continue polling
-    setTimeout(pollProgress, 800);
+    progressPollTimer = setTimeout(pollProgress, 800);
   } catch (e) {
-    setTimeout(pollProgress, 1500);
+    progressPollTimer = setTimeout(pollProgress, 1500);
   }
 }
 
@@ -305,7 +312,7 @@ async function loadDashboard() {
   if (!checkApiKey()) return;
 
   try {
-    const res = await API.getAnalysis(selectedBooks[0] || "", true);
+    const res = await API.getAnalysis(selectedBooks[0] || "", false);
     if (res.code !== 0) {
       $("#dashBookInfo").textContent = res.message || "暂无数据";
       return;
@@ -318,6 +325,43 @@ async function loadDashboard() {
 }
 
 $("#btnRefreshAnalysis").addEventListener("click", loadDashboard);
+
+async function requestAIAnalysis() {
+  if (!currentAnalysis) return;
+  const btn = $("#btnAIAnalysis");
+  btn.disabled = true;
+  btn.textContent = "AI 分析中…";
+  $("#aiPanel").classList.remove("hidden");
+  $("#aiContent").innerHTML = '<div class="ai-loading">正在调用 AI 分析…</div>';
+
+  try {
+    // Build a fetch with ai=true
+    const res = await API._fetch(
+      `/api/v1/analysis?book=${encodeURIComponent(currentAnalysis.book || "")}&ai=true`,
+    );
+    if (res.code === 0 && res.data?.aiAnalysis?.available) {
+      const ai = res.data.aiAnalysis;
+      let info = ai.analysis;
+      if (ai.cached) {
+        info = `[缓存 · ${new Date().toLocaleTimeString()}] 累计成本 ¥${ai.totalCost || 0}\n\n${ai.analysis}`;
+      } else {
+        info = `[本次 ¥${ai.costEstimate || 0} · 累计 ¥${ai.totalCost || 0} · ${ai.tokens?.input || 0}+${ai.tokens?.output || 0} tokens]\n\n${ai.analysis}`;
+      }
+      $("#aiContent").textContent = info;
+    } else if (res.data?.aiAnalysis?.message) {
+      $("#aiContent").textContent = res.data.aiAnalysis.message;
+    } else {
+      $("#aiContent").textContent = "AI 分析暂不可用";
+    }
+  } catch (e) {
+    $("#aiContent").textContent = "AI 调用失败: " + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "AI 深度分析";
+  }
+}
+
+$("#btnAIAnalysis").addEventListener("click", requestAIAnalysis);
 
 function renderDashboard(data) {
   const a = data.analysis;
@@ -387,12 +431,22 @@ function renderDashboard(data) {
       </div>`).join("");
   }
 
-  // AI Analysis
+  // AI Analysis panel — always visible, user clicks to trigger
+  $("#aiPanel").classList.remove("hidden");
   if (data.aiAnalysis?.available) {
-    $("#aiPanel").classList.remove("hidden");
-    $("#aiContent").textContent = data.aiAnalysis.analysis;
-  } else if (data.aiAnalysis?.message && data.aiAnalysis.message.includes("未配置")) {
-    $("#aiPanel").classList.add("hidden");
+    let info = data.aiAnalysis.analysis;
+    if (data.aiAnalysis.cached) {
+      info = `[缓存 · ¥${data.aiAnalysis.totalCost || 0} 累计]\n\n${data.aiAnalysis.analysis}`;
+    }
+    $("#aiContent").textContent = info;
+  } else if (data.aiAnalysis?.message) {
+    if (data.aiAnalysis.message.includes("未配置")) {
+      $("#aiPanel").classList.add("hidden");
+    } else {
+      $("#aiContent").textContent = data.aiAnalysis.message;
+    }
+  } else {
+    $("#aiContent").textContent = "点击上方「AI 深度分析」按钮获取智能诊断（约 ¥0.01/次，结果缓存 6 小时）。";
   }
 }
 

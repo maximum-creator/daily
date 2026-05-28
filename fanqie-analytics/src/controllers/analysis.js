@@ -15,7 +15,8 @@ function findCollection(collections, targetBook) {
 router.get("/analysis", async (req, res) => {
   const tenantId = req.tenant.id;
   const targetBook = req.query.book || "";
-  const includeAI = req.query.ai !== "false";
+  const includeAI = req.query.ai === "true";
+  const forceAI = req.query.force_ai === "true";
 
   const collections = await getRecentCollections(tenantId);
   if (collections.length === 0) {
@@ -28,7 +29,10 @@ router.get("/analysis", async (req, res) => {
 
   let aiAnalysis = null;
   if (includeAI) {
-    aiAnalysis = await generateAIAnalysis(analysis, targetData);
+    aiAnalysis = await generateAIAnalysis(analysis, targetData, {
+      tenantId,
+      force: forceAI,
+    });
   }
 
   res.json({

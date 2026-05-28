@@ -103,7 +103,8 @@
   <div class="ai-panel hidden" id="aiPanel">
     <div class="ai-header">
       <span class="ai-badge">AI 分析</span>
-      <span style="font-size:13px;color:var(--text-secondary)">基于 Qwen 大模型</span>
+      <span style="font-size:13px;color:var(--text-secondary)">基于 Qwen 大模型 · 每次约 ¥0.01 · 6小时缓存</span>
+      <button class="btn btn-sm btn-secondary" id="btnAIAnalysis" style="margin-left:auto">AI 深度分析</button>
     </div>
     <div class="ai-content" id="aiContent"></div>
   </div>
@@ -171,6 +172,7 @@
     <span class="prog-pct" id="progPct">0%</span>
   </div>
   <p style="color:var(--text-muted);font-size:13px;margin-top:16px" id="progMessage"></p>
+  <button class="btn btn-secondary btn-sm" id="btnCloseProgress" style="margin-top:20px;opacity:0.5">关闭</button>
 </div>
 
 <!-- ═══ API KEY MODAL ═══ -->
