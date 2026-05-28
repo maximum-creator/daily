@@ -46,6 +46,53 @@ async function searchJdProducts(page, brandName, maxPages = 3) {
     const products = await page.evaluate(() => {
       const results = [];
 
+      // Inline helpers — must be defined inside evaluate (browser context)
+      function parseJdItem(item) {
+        const nameEl = item.querySelector(".p-name em") ||
+                       item.querySelector(".p-name a em") ||
+                       item.querySelector(".p-name a") ||
+                       item.querySelector(".p-name-type-2 a") ||
+                       item.querySelector("[data-title]");
+        const name = (nameEl?.textContent || nameEl?.getAttribute?.("data-title") || "").trim();
+        if (!name || name.length < 3) return null;
+        const priceEl = item.querySelector(".p-price i") ||
+                        item.querySelector(".p-price strong") ||
+                        item.querySelector(".p-price span") ||
+                        item.querySelector(".p-price");
+        const priceText = (priceEl?.textContent || "").trim();
+        const shopEl = item.querySelector(".p-shop a") ||
+                       item.querySelector(".p-shop span") ||
+                       item.querySelector(".curr-shop") ||
+                       item.querySelector("[class*='shop'] a") ||
+                       item.querySelector("[class*='shop'] span");
+        const shop = (shopEl?.textContent || "").trim();
+        const isSelf = !!item.querySelector(".p-icons i-self") ||
+                       !!item.querySelector(".p-icon-self") ||
+                       !!item.querySelector("[class*='self']") ||
+                       (shop && (shop.includes("自营") || shop.includes("京东自营")));
+        const commitEl = item.querySelector(".p-commit strong a") ||
+                         item.querySelector(".p-commit a") ||
+                         item.querySelector("[class*='commit'] a");
+        const reviewsText = (commitEl?.textContent || "").trim();
+        const sku = item.getAttribute("data-sku") || "";
+        const imgEl = item.querySelector(".p-img img");
+        const imgSrc = imgEl?.getAttribute?.("src") ||
+                       imgEl?.getAttribute?.("data-lazy-img") || "";
+        return { name, price: priceText, shop, isSelfOperated: isSelf, reviews: reviewsText, sku, imgSrc };
+      }
+
+      function parseProductText(text) {
+        const priceMatch = text.match(/[¥￥]\s*([\d.]+)/);
+        if (!priceMatch) return null;
+        const priceStr = priceMatch[1];
+        const priceIdx = text.indexOf("¥") >= 0 ? text.indexOf("¥") : text.indexOf("￥");
+        let name = priceIdx > 0 ? text.substring(0, priceIdx).trim() : text;
+        if (name.length > 120) name = name.slice(0, 120);
+        const reviewMatch = text.match(/([\d.]+万?)\+?\s*(条评价|评价|评论)/);
+        const reviews = reviewMatch ? reviewMatch[1] : "";
+        return { name, price: priceStr, shop: "", isSelfOperated: false, reviews, sku: "", imgSrc: "" };
+      }
+
       // Strategy A: Classic JD gl-item (server-side rendered list items)
       const items = document.querySelectorAll("li.gl-item");
       if (items.length > 0) {

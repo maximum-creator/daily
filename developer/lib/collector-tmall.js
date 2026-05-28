@@ -24,18 +24,31 @@ async function searchTmallProducts(page, brandName, maxPages = 3) {
   page.on("response", onResponse);
 
   for (let pg = 1; pg <= maxPages; pg++) {
-    const searchUrl = `https://s.taobao.com/search?q=${encodeURIComponent(brandName)}&tab=mall&s=${(pg - 1) * 44}`;
+    const searchUrl = `https://s.taobao.com/search?q=${encodeURIComponent(brandName)}&tab=mall&page=${pg}`;
 
-    try {
-      await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-    } catch (e) { /* timeout ok — page may still have content */ }
+    const currentUrl = page.url();
+    const alreadyOnSearch = currentUrl.includes("s.taobao.com/search") && currentUrl.includes(`q=${encodeURIComponent(brandName)}`);
 
+    if (!alreadyOnSearch || pg > 1) {
+      try {
+        await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      } catch (e) { /* timeout ok */ }
+    }
+    // Wait for dynamic content (XHR-based search results) and product links
     await page.waitForTimeout(5000);
+    try {
+      await page.waitForSelector("a[href*='detail.tmall.com']", { timeout: 10000 });
+    } catch (e) {
+      const dumpUrl = page.url();
+      const dumpTitle = await page.title().catch(() => "N/A");
+      const dumpBody = await page.evaluate(() => (document.body?.innerText || "").slice(0, 500)).catch(() => "N/A");
+      console.log(`[tmall] NO LINKS — url: ${dumpUrl.slice(0, 100)} | title: ${dumpTitle.slice(0, 60)} | body: ${dumpBody.slice(0, 200)}`);
+    }
 
     // Tmall redirects to s.taobao.com — check what we got
-    const currentUrl = page.url();
+    const redirectedUrl = page.url();
     const pageTitle = await page.title().catch(() => "");
-    console.log(`[tmall] pg${pg} ${currentUrl.slice(0, 100)} | ${pageTitle.slice(0, 60)}`);
+    console.log(`[tmall] pg${pg} ${redirectedUrl.slice(0, 100)} | ${pageTitle.slice(0, 60)}`);
 
     // Detection: login wall
     const pageState = await detectPageState(page);
@@ -58,78 +71,66 @@ async function searchTmallProducts(page, brandName, maxPages = 3) {
     // Strategy 2: Broad DOM extraction with multiple selector approaches
     const domProducts = await page.evaluate(() => {
       const results = [];
-
-      // 2A: Product cards — common class patterns on s.taobao.com
-      const cardSelectors = [
-        "[class*='Card']", "[class*='card']",
-        "[class*='item']", "[class*='Item']",
-        ".product", ".Product",
-        "[class*='grid'] a[href*='item.taobao.com']",
-        "[class*='grid'] a[href*='detail.tmall.com']",
-        "a[href*='detail.tmall.com']",
-        "a[href*='item.taobao.com']",
-        ".J_ItemList > div",
-        "#mainsrp-itemlist .item",
-        ".m-itemlist .item",
-      ];
-
-      for (const sel of cardSelectors) {
-        try {
-          const els = document.querySelectorAll(sel);
-          if (els.length > 0) {
-            els.forEach(el => {
-              const text = (el.textContent || "").trim();
-              if (text.length > 15 && text.length < 500) {
-                results.push(parseProductText(text, el));
-              }
-            });
-            if (results.length >= 5) break;
-          }
-        } catch (e) { /* skip bad selector */ }
+      // Inline parse helper — must be defined inside evaluate (browser context)
+      function parseProduct(text) {
+        const priceMatch = text.match(/¥\s*([\d.]+)/);
+        let name = text;
+        const priceIdx = text.indexOf("¥");
+        if (priceIdx > 0) name = text.substring(0, priceIdx).trim();
+        if (name.length > 120) name = name.slice(0, 120);
+        const salesMatch = text.match(/([\d.万+]+)\s*[人笔件]付款/);
+        return {
+          name,
+          price: priceMatch ? priceMatch[1] : "",
+          sales: salesMatch ? salesMatch[1] : "",
+          shop: "",
+        };
       }
 
-      // 2B: Image alt text (product images with meaningful alt)
+      // Strategy A: Direct link extraction (most reliable, matches debug endpoint approach)
+      const links = document.querySelectorAll("a[href*='detail.tmall.com']");
+      for (const link of links) {
+        const text = (link.textContent || "").trim();
+        if (text.length > 8) {
+          const parsed = parseProduct(text);
+          if (parsed.name) {
+            results.push(parsed);
+            if (results.length >= 60) break;
+          }
+        }
+      }
+
+      // Strategy B: taobao item links as fallback
+      if (results.length < 5) {
+        const tbLinks = document.querySelectorAll("a[href*='item.taobao.com']");
+        for (const link of tbLinks) {
+          const text = (link.textContent || "").trim();
+          if (text.length > 8) {
+            const parsed = parseProduct(text);
+            if (parsed.name && !results.find(r => r.name === parsed.name)) {
+              results.push(parsed);
+              if (results.length >= 60) break;
+            }
+          }
+        }
+      }
+
+      // Strategy C: Image alt text fallback
       if (results.length < 5) {
         const imgs = document.querySelectorAll("img[alt]");
-        imgs.forEach(img => {
+        for (const img of imgs) {
           const alt = img.alt.trim();
           if (alt.length > 5 && alt.length < 200 && !results.find(r => r.name === alt)) {
             const container = img.closest("div, li, a, section");
             const text = container ? container.textContent.trim() : "";
             const priceMatch = text.match(/¥\s*([\d.]+)/);
-            const salesMatch = text.match(/([\d.+]+)[人笔件]付款/);
+            const salesMatch = text.match(/([\d.万+]+)\s*[人笔件]付款/);
             results.push({
               name: alt,
               price: priceMatch ? priceMatch[1] : "",
               sales: salesMatch ? salesMatch[1] : "",
               shop: "",
             });
-          }
-        });
-      }
-
-      // 2C: Broad text scan — find price patterns in any visible element
-      if (results.length < 5) {
-        const walker = document.createTreeWalker(
-          document.body,
-          NodeFilter.SHOW_ELEMENT,
-          { acceptNode: (node) => {
-            if (node.children.length > 0) return NodeFilter.FILTER_SKIP;
-            const txt = node.textContent.trim();
-            return (txt.length > 10 && txt.length < 400 && txt.includes("¥")) ?
-              NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-          }}
-        );
-        const seen = new Set();
-        let node;
-        while ((node = walker.nextNode()) && results.length < 60) {
-          const text = node.textContent.trim();
-          const key = text.slice(0, 40);
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const parsed = parseProductText(text, node);
-          if (parsed.name && parsed.price) {
-            results.push(parsed);
           }
         }
       }

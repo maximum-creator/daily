@@ -28,17 +28,33 @@ function getBrowserOptions(headless) {
       "--disable-automation",
       "--no-sandbox",
       "--disable-setuid-sandbox",
-      "--window-position=-32000,-32000",
     ],
   };
 }
 
 async function initScript(context) {
   await context.addInitScript(() => {
+    // Core anti-detection overrides
     Object.defineProperty(navigator, "webdriver", { get: () => false });
     Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
     Object.defineProperty(navigator, "languages", { get: () => ["zh-CN", "zh", "en"] });
+    // Spoof hardware to look like a real desktop
+    Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 8 });
+    Object.defineProperty(navigator, "deviceMemory", { get: () => 8 });
+    // Override permissions API
+    const originalQuery = window.navigator.permissions?.query;
+    if (originalQuery) {
+      window.navigator.permissions.query = (params) =>
+        params.name === "notifications"
+          ? Promise.resolve({ state: Notification.permission, onchange: null })
+          : originalQuery.call(window.navigator.permissions, params);
+    }
+    // Chrome runtime
     window.chrome = { runtime: {} };
+    // Remove "HeadlessChrome" from userAgent
+    Object.defineProperty(navigator, "userAgent", {
+      get: () => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    });
   });
 }
 

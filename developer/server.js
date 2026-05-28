@@ -460,8 +460,70 @@ app.get("/api/v1/debug", async (req, res) => {
       : await detectPageState(page).catch(() => ({ blocked: false }));
     result.pageState = state;
 
-    // Try extraction
+    // Raw page diagnostics
+    result.pageDiag = await page.evaluate(() => {
+      const body = document.body?.innerText || "";
+      const priceMatches = body.match(/¥\s*\d+\.?\d*/g) || [];
+      const linkCounts = {
+        taobaoItems: document.querySelectorAll('a[href*="item.taobao.com"]').length,
+        tmallItems: document.querySelectorAll('a[href*="detail.tmall.com"]').length,
+      };
+      const cardStats = {};
+      for (const s of ["[class*='Card']","[class*='card']","[class*='item']",".product","[class*='grid']"]) {
+        try { cardStats[s] = document.querySelectorAll(s).length; } catch(e) { cardStats[s] = -1; }
+      }
+      return {
+        bodyLen: body.length,
+        priceMatches: priceMatches.length,
+        priceSample: priceMatches.slice(0, 5),
+        linkCounts,
+        cardStats,
+        bodyPreview: body.slice(0, 1200),
+      };
+    });
+
+    // DOM structure probe — what do the tmall links actually look like?
+    result.domProbe = await page.evaluate(() => {
+      const links = document.querySelectorAll("a[href*='detail.tmall.com']");
+      if (links.length === 0) return { error: "no tmall links found" };
+      const first = links[0];
+      return {
+        linkCount: links.length,
+        firstLink: {
+          tagName: first.tagName,
+          className: first.className,
+          innerHTML: first.innerHTML.slice(0, 500),
+          textContent: (first.textContent || "").trim().slice(0, 300),
+          textContentLen: (first.textContent || "").trim().length,
+          parentTag: first.parentElement?.tagName,
+          parentClass: first.parentElement?.className?.slice(0, 100),
+        },
+      };
+    });
+
+    // Try extraction — use direct approach first, then fall back to collector
     if (!state.blocked) {
+      // Direct extraction inline
+      result.directExtract = await page.evaluate(() => {
+        const results = [];
+        const links = document.querySelectorAll("a[href*='detail.tmall.com']");
+        for (const link of links) {
+          const text = (link.textContent || "").trim();
+          if (text.length > 8) {
+            const priceMatch = text.match(/¥\s*([\d.]+)/);
+            const name = text.slice(0, text.indexOf("¥")).trim().slice(0, 120);
+            const salesMatch = text.match(/([\d.万+]+)\s*[人笔件]付款/);
+            results.push({
+              name: name || text.slice(0, 60),
+              price: priceMatch ? priceMatch[1] : "",
+              sales: salesMatch ? salesMatch[1] : "",
+            });
+            if (results.length >= 5) break;
+          }
+        }
+        return results;
+      });
+
       const collector = platform === "jd"
         ? require("./lib/collector-jd")
         : require("./lib/collector-tmall");
