@@ -4,6 +4,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { normalizeName, localISO, today, sanitize, parsePrice, parseSales, classifyStore } = require("./utils");
 
 // ── 搜索天猫商品（五层回退策略）────────────────────────────────
 
@@ -269,22 +270,6 @@ function extractProductsFromJson(obj, depth = 0) {
   return results;
 }
 
-// ── 价格/销量解析 ──────────────────────────────────────────────
-
-function parsePrice(priceStr) {
-  const m = String(priceStr).match(/([\d.]+)/);
-  return m ? parseFloat(m[1]) : 0;
-}
-
-function parseSales(salesStr) {
-  const s = String(salesStr);
-  const m = s.match(/([\d.]+)/);
-  if (!m) return 0;
-  const n = parseFloat(m[1]);
-  if (s.includes("万")) return Math.round(n * 10000);
-  return n;
-}
-
 // ── 采集品牌商品快照 ──────────────────────────────────────────
 
 async function collectBrandSnapshot(page, brandName) {
@@ -297,6 +282,7 @@ async function collectBrandSnapshot(page, brandName) {
     sales: parseSales(p.sales),
     salesDisplay: String(p.sales || ""),
     shop: String(p.shop || ""),
+    storeType: classifyStore(p.shop),
   }));
 
   const validPrices = cleaned.map(p => p.price).filter(v => v > 0);
@@ -394,23 +380,6 @@ function compareSnapshots(today, yesterday) {
   return { signals, isNew: false };
 }
 
-// ── Helpers ────────────────────────────────────────────────────
-
-function normalizeName(name) {
-  return (name || "").replace(/\s+/g, "").replace(/[（(].*?[)）]/g, "").replace(/【.*?】/g, "").slice(0, 40);
-}
-
-function localISO() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
-
-function today() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 // ── Persistence ─────────────────────────────────────────────────
 
 function saveSnapshot(dataDir, tenantId, brandName, snapshot) {
@@ -425,10 +394,6 @@ function loadSnapshot(dataDir, tenantId, brandName, date) {
   const fp = path.join(dataDir, tenantId, sanitize(brandName), `snapshot-${date}.json`);
   if (!fs.existsSync(fp)) return null;
   try { return JSON.parse(fs.readFileSync(fp, "utf-8")); } catch (e) { return null; }
-}
-
-function sanitize(name) {
-  return (name || "").replace(/[<>:"/\\|?*]/g, "_").trim();
 }
 
 module.exports = {

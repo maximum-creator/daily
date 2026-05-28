@@ -94,6 +94,12 @@ input,button{font-family:inherit}
       <button class="btn btn-outline btn-sm" id="loginPddBtn" onclick="doLogin('pdd')">登录拼多多</button>
       <span style="font-size:12px;color:#999" id="pddHint">搜索通常无需登录</span>
     </div>
+    <div class="platform-row" style="margin-top:8px">
+      <span>抖音电商：</span>
+      <span class="platform-badge platform-pending" id="douyinBadge">未登录</span>
+      <button class="btn btn-outline btn-sm" id="loginDouyinBtn" onclick="doLogin('douyin')">登录抖音</button>
+      <span style="font-size:12px;color:#999" id="douyinHint">搜索通常无需登录</span>
+    </div>
     <div class="status" id="loginMsg">登录后即可采集对应平台的商品数据</div>
   </div>
 
@@ -166,6 +172,7 @@ let monitoredBrands = [];
 let tmallReady = false;
 let jdReady = false;
 let pddReady = false;
+let douyinReady = false;
 let compareList = [];
 
 // ── Init ──────────────────────────────────────────────────────
@@ -189,6 +196,7 @@ async function checkLogin() {
       tmallReady = !!res.tenants[tid].tmallReady;
       jdReady = !!res.tenants[tid].jdReady;
       pddReady = !!res.tenants[tid].pddReady;
+      douyinReady = !!res.tenants[tid].douyinReady;
       updateLoginUI();
     }
   } catch(e) {}
@@ -199,12 +207,15 @@ function updateLoginUI() {
   const tmallBadge = document.getElementById("tmallBadge");
   const jdBadge = document.getElementById("jdBadge");
   const pddBadge = document.getElementById("pddBadge");
+  const douyinBadge = document.getElementById("douyinBadge");
   const tmallBtn = document.getElementById("loginTmallBtn");
   const jdBtn = document.getElementById("loginJdBtn");
   const pddBtn = document.getElementById("loginPddBtn");
+  const douyinBtn = document.getElementById("loginDouyinBtn");
   const tmallHint = document.getElementById("tmallHint");
   const jdHint = document.getElementById("jdHint");
   const pddHint = document.getElementById("pddHint");
+  const douyinHint = document.getElementById("douyinHint");
 
   if (tmallReady) {
     card.style.borderLeftColor = "#27ae60";
@@ -244,11 +255,24 @@ function updateLoginUI() {
     pddHint.textContent = "搜索通常无需登录";
   }
 
-  const readyCount = (tmallReady ? 1 : 0) + (jdReady ? 1 : 0) + (pddReady ? 1 : 0);
+  if (douyinReady) {
+    douyinBadge.textContent = "已登录";
+    douyinBadge.className = "platform-badge platform-ready";
+    douyinBtn.textContent = "重新登录";
+    douyinHint.textContent = "✓ 就绪";
+  } else {
+    douyinBadge.textContent = "未登录";
+    douyinBadge.className = "platform-badge platform-pending";
+    douyinBtn.textContent = "登录抖音";
+    douyinHint.textContent = "搜索通常无需登录";
+  }
+
+  const readyCount = (tmallReady ? 1 : 0) + (jdReady ? 1 : 0) + (pddReady ? 1 : 0) + (douyinReady ? 1 : 0);
+  const totalPlatforms = 4;
   document.getElementById("loginMsg").textContent =
     readyCount === 0 ? "请登录至少一个数据源后开始监测" :
-    readyCount === 3 ? "三数据源就绪，可同时采集天猫+京东+拼多多" :
-    `已就绪 ${readyCount}/3 数据源，可开始监测`;
+    readyCount === totalPlatforms ? "四数据源就绪，可同时采集天猫+京东+拼多多+抖音" :
+    `已就绪 ${readyCount}/${totalPlatforms} 数据源，可开始监测`;
 }
 
 // ── Login ─────────────────────────────────────────────────────
@@ -268,7 +292,7 @@ async function doLogin(platform) {
     if (res.code === 0) {
       msg.textContent = res.message;
       if (res.profileReady) {
-        if (platform === "jd") jdReady = true; else if (platform === "pdd") pddReady = true; else tmallReady = true;
+        if (platform === "jd") jdReady = true; else if (platform === "pdd") pddReady = true; else if (platform === "douyin") douyinReady = true; else tmallReady = true;
         updateLoginUI();
         btn.disabled = false;
       } else if (res.launching) {
@@ -278,7 +302,7 @@ async function doLogin(platform) {
             const r2 = await api("POST", "/login", { platform });
             if (r2.profileReady) {
               clearInterval(poll);
-              if (platform === "jd") jdReady = true; else if (platform === "pdd") pddReady = true; else tmallReady = true;
+              if (platform === "jd") jdReady = true; else if (platform === "pdd") pddReady = true; else if (platform === "douyin") douyinReady = true; else tmallReady = true;
               updateLoginUI();
               btn.disabled = false;
             }

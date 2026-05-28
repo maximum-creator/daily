@@ -90,7 +90,7 @@ async function injectCookies(tenantId, context) {
   const existing = await context.cookies();
   const existingNames = new Set(existing.map(c => `${c.name}@${c.domain}`));
 
-  for (const platform of ["tmall", "jd", "pdd"]) {
+  for (const platform of ["tmall", "jd", "pdd", "douyin"]) {
     const cookies = loadCookies(tenantId, platform);
     if (cookies.length > 0) {
       // Only inject cookies that don't already exist in context
@@ -164,6 +164,8 @@ async function getPage(tenantId) {
   await initScript(context);
   // Default/ is cleaned before launch → no restored tabs from previous sessions
   await injectCookies(tenantId, context);
+  // Close auto-created blank pages from launchPersistentContext, then create one clean page
+  await cleanupPages(context);
 
   entry = { context, pageCount: 0, busy: false };
   pool.set(tenantId, entry);
@@ -278,10 +280,13 @@ function markProfileReady(tenantId, platform) {
 }
 
 function getPlatformStatus(tenantId) {
+  // PDD doesn't require login — ready if tenant profile directory exists
+  const hasDir = fs.existsSync(profileDir(tenantId));
   return {
     tmall: hasProfile(tenantId, "tmall") || hasProfile(tenantId),
     jd: hasProfile(tenantId, "jd"),
-    pdd: hasProfile(tenantId, "pdd"),
+    pdd: hasProfile(tenantId, "pdd") || hasDir,
+    douyin: hasProfile(tenantId, "douyin") || hasDir,
   };
 }
 

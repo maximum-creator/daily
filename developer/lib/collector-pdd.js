@@ -4,6 +4,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { normalizeName, localISO, today, sanitize, parsePrice, parseSales, classifyStore } = require("./utils");
 
 // ── 搜索拼多多商品 ──────────────────────────────────────────────
 
@@ -244,25 +245,6 @@ async function detectPddPageState(page) {
   });
 }
 
-// ── 价格/销量解析 ──────────────────────────────────────────────────
-
-function parsePrice(priceStr) {
-  const s = String(priceStr).replace(/[¥￥]/g, "").trim();
-  const m = s.match(/([\d.]+)/);
-  return m ? parseFloat(m[1]) : 0;
-}
-
-function parseSales(salesStr) {
-  const s = String(salesStr);
-  const wanMatch = s.match(/([\d.]+)\s*万/);
-  if (wanMatch) return Math.round(parseFloat(wanMatch[1]) * 10000);
-  const plusMatch = s.match(/([\d.]+)\s*\+/);
-  if (plusMatch) return parseInt(plusMatch[1]);
-  const m = s.match(/([\d,]+)/);
-  if (m) return parseInt(m[1].replace(/,/g, ""));
-  return 0;
-}
-
 // ── 采集品牌快照 ───────────────────────────────────────────────────
 
 async function collectBrandSnapshot(page, brandName) {
@@ -276,6 +258,7 @@ async function collectBrandSnapshot(page, brandName) {
     salesDisplay: String(p.sales || ""),
     shop: String(p.shop || ""),
     goodsId: String(p.goodsId || ""),
+    storeType: classifyStore(p.shop),
   }));
 
   const validPrices = cleaned.map(p => p.price).filter(v => v > 0);
@@ -348,27 +331,6 @@ function compareSnapshots(today, yesterday) {
   }
 
   return { signals, isNew: false };
-}
-
-// ── Helpers ──────────────────────────────────────────────────────
-
-function normalizeName(name) {
-  return (name || "").replace(/\s+/g, "").replace(/[（(].*?[)）]/g, "").slice(0, 40);
-}
-
-function localISO() {
-  const d = new Date();
-  const p = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
-
-function today() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function sanitize(name) {
-  return (name || "").replace(/[<>:"/\\|?*]/g, "_").trim();
 }
 
 // ── Persistence ──────────────────────────────────────────────────
