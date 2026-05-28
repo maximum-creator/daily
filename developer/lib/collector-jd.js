@@ -11,25 +11,49 @@ async function searchJdProducts(page, brandName, maxPages = 1) {
   const allProducts = [];
 
   for (let pg = 1; pg <= maxPages; pg++) {
-    // JD pagination uses odd numbers: page 1 → param 1, page 2 → param 3, etc.
     const searchUrl = `https://search.jd.com/Search?keyword=${encodeURIComponent(brandName)}&enc=utf-8&page=${2 * pg - 1}`;
 
-    // First page: warm up on JD home to establish session before hitting search
+    // First page: navigate like a human — go to JD home, type into search box
     if (pg === 1) {
-      const currentUrl = page.url();
-      if (!currentUrl.includes("jd.com") || currentUrl.includes("passport")) {
+      try {
+        await page.goto("https://www.jd.com/", { waitUntil: "domcontentloaded", timeout: 20000 });
+        await page.waitForTimeout(2000 + Math.random() * 3000);
+
+        // Use search form naturally to avoid rate-limit pattern detection
+        const searchInput = await page.$("#key");
+        if (searchInput) {
+          await searchInput.click({ force: true });
+          await page.waitForTimeout(300 + Math.random() * 500);
+          // Clear any default text
+          await searchInput.fill("");
+          await page.waitForTimeout(200 + Math.random() * 300);
+          // Type character by character for human-like cadence
+          for (const char of brandName) {
+            await page.keyboard.type(char);
+            await page.waitForTimeout(50 + Math.random() * 150);
+          }
+          await page.waitForTimeout(500 + Math.random() * 800);
+          await page.keyboard.press("Enter");
+          // Wait for search results page to load
+          await page.waitForTimeout(3000 + Math.random() * 2000);
+        } else {
+          // Fallback: direct navigation
+          await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000, referer: "https://www.jd.com/" });
+          await page.waitForTimeout(5000);
+        }
+      } catch (e) {
+        // Fallback on any error
         try {
-          await page.goto("https://www.jd.com/", { waitUntil: "domcontentloaded", timeout: 20000 });
-          await page.waitForTimeout(2000 + Math.random() * 2000);
-        } catch (e) { /* continue */ }
+          await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000, referer: "https://www.jd.com/" });
+          await page.waitForTimeout(5000);
+        } catch (e2) { /* continue */ }
       }
+    } else {
+      try {
+        await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000, referer: "https://www.jd.com/" });
+      } catch (e) { /* timeout ok */ }
+      await page.waitForTimeout(4000 + Math.random() * 2000);
     }
-
-    try {
-      await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000, referer: "https://www.jd.com/" });
-    } catch (e) { /* timeout ok */ }
-
-    await page.waitForTimeout(5000);
 
     const currentUrl = page.url();
     const pageTitle = await page.title().catch(() => "");
@@ -273,6 +297,10 @@ async function detectJdPageState(page) {
       return { blocked: true, reason: "rate_limit", detail: "京东搜索限流，请稍后重试" };
     }
 
+    // Rate limit — inline message on search page
+    if (text.includes("访问频繁") || text.includes("无法搜索") || text.includes("请稍后再试")) {
+      return { blocked: true, reason: "rate_limit", detail: "京东搜索限流，请稍后重试" };
+    }
     // Anti-bot / captcha
     if (text.includes("验证码") || text.includes("请输入验证码") || text.includes("滑块验证")) {
       return { blocked: true, reason: "captcha", detail: "触发京东反爬验证" };

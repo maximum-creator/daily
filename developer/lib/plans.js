@@ -5,7 +5,7 @@ const PLANS = {
     name: "试用版",
     monthlyFee: 0,
     maxBrands: 3,
-    maxSearchesPerDay: 5,
+    maxSearchesPerDay: 20,
     maxApiCallsPerDay: 200,
     maxDataDays: 7,
   },

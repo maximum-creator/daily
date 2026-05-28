@@ -1,10 +1,10 @@
 {
   "demo": {
     "name": "Demo品牌",
-    "plan": "trial",
+    "plan": "enterprise",
     "apiKey": "dev_sk_demo_001",
-    "role": "user",
-    "maxBrands": 3,
+    "role": "admin",
+    "maxBrands": 999,
     "email": ""
   },
   "admin": {

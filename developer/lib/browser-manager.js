@@ -169,13 +169,10 @@ async function getPage(tenantId) {
 
 // Pool management for external contexts (e.g., from login flow)
 function addToPool(tenantId, context) {
-  // Close existing pool entry if any
   const existing = pool.get(tenantId);
   if (existing) {
     existing.context.close().catch(() => {});
   }
-  // Clean up restored pages to prevent tab accumulation
-  cleanupPages(context).catch(() => {});
   pool.set(tenantId, { context, pageCount: 0, busy: false });
 }
 
@@ -215,7 +212,7 @@ function saveCookies(tenantId, cookies, platform) {
   const filtered = cookies.filter(c => {
     const name = c.name || "";
     // Skip analytics/tracking cookies, keep session/auth ones
-    if (name.startsWith("_") || name.startsWith("utm_") || name.startsWith("cnzz")) return false;
+    if (name.startsWith("__utm") || name.startsWith("cnzz")) return false;
     if (name === "xlly_s" || name === "x5secdata") return false;
     return true;
   });
@@ -254,9 +251,16 @@ function hasSavedCookies(tenantId, platform) {
 function hasProfile(tenantId, platform) {
   const dir = profileDir(tenantId);
   if (!fs.existsSync(dir)) return false;
-  // Check for either marker file OR saved cookies
+  // Check marker file with 24h freshness (JD sessions expire server-side)
   const marker = platform ? `.profile-ready-${platform}` : ".profile-ready";
-  if (fs.existsSync(path.join(dir, marker))) return true;
+  const markerPath = path.join(dir, marker);
+  if (fs.existsSync(markerPath)) {
+    try {
+      const ts = new Date(fs.readFileSync(markerPath, "utf-8").trim()).getTime();
+      if (Date.now() - ts < 24 * 60 * 60 * 1000) return true;
+    } catch (e) { /* stale/invalid marker, fall through */ }
+  }
+  // Fallback: check for saved cookies with valid auth entries
   return hasSavedCookies(tenantId, platform || "tmall");
 }
 

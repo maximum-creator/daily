@@ -180,14 +180,34 @@ app.post("/api/v1/login", async (req, res) => {
       const platformId = platform === "jd" ? "jd" : "tmall";
 
       if (success || done) {
-        // Save cookies to JSON for future sessions
-        const cookies = await browser.cookies().catch(() => []);
-        const platformCookies = cookies.filter(c =>
+        // Save auth cookies from login page first (thor is set here)
+        let cookies = await browser.cookies().catch(() => []);
+        let platformCookies = cookies.filter(c =>
           cookieDomains.some(d => (c.domain || "").includes(d))
         );
-        if (platformCookies.length > 0) {
-          saveCookies(tenantId, platformCookies, platformId);
+
+        // Then navigate to homepage to collect device fingerprint cookies (__jda etc.)
+        const homeUrl = platform === "jd" ? "https://www.jd.com/" : "https://www.tmall.com/";
+        try {
+          await page.goto(homeUrl, { waitUntil: "domcontentloaded", timeout: 15000 });
+          await page.waitForTimeout(3000);
+        } catch (e) { /* continue */ }
+
+        // Get all cookies again and merge with original batch
+        cookies = await browser.cookies().catch(() => []);
+        const allPlatformCookies = cookies.filter(c =>
+          cookieDomains.some(d => (c.domain || "").includes(d))
+        );
+        // Merge: dedup by name+domain, keep all unique cookies from both stages
+        const merged = new Map();
+        for (const c of [...platformCookies, ...allPlatformCookies]) {
+          merged.set(`${c.name}@${c.domain}`, c);
         }
+        const finalCookies = [...merged.values()];
+        if (finalCookies.length > 0) {
+          saveCookies(tenantId, finalCookies, platformId);
+        }
+
         markProfileReady(tenantId, platformId);
         // Inject all saved cookies (both platforms) into this context
         await injectCookies(tenantId, browser);
