@@ -162,7 +162,7 @@ async function getPage(tenantId) {
   if (!context) throw new Error("无法创建浏览器上下文：profile被占用");
 
   await initScript(context);
-  await cleanupPages(context);
+  // Default/ is cleaned before launch → no restored tabs from previous sessions
   await injectCookies(tenantId, context);
 
   entry = { context, pageCount: 0, busy: false };
