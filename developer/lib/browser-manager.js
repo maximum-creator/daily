@@ -16,12 +16,14 @@ function profileDir(tenantId) {
 function getBrowserOptions(headless) {
   return {
     headless,
-    viewport: { width: 1920, height: 1080 },
+    viewport: { width: 1280, height: 720 },
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     locale: "zh-CN",
     timezoneId: "Asia/Shanghai",
     args: [
+      "--window-position=50,50",
+      "--window-size=1280,720",
       "--disable-features=TranslateUI",
       "--no-first-run",
       "--disable-blink-features=AutomationControlled",
@@ -85,16 +87,33 @@ async function cleanupPages(context) {
 }
 
 async function injectCookies(tenantId, context) {
+  // Get existing cookie names to avoid duplicates
+  const existing = await context.cookies();
+  const existingNames = new Set(existing.map(c => `${c.name}@${c.domain}`));
+
   for (const platform of ["tmall", "jd"]) {
     const cookies = loadCookies(tenantId, platform);
     if (cookies.length > 0) {
-      try {
-        await context.addCookies(cookies);
-      } catch (e) {
-        console.error(`[cookies] 注入${platform} cookies失败: ${e.message}`);
+      // Only inject cookies that don't already exist in context
+      const newCookies = cookies.filter(c => !existingNames.has(`${c.name}@${c.domain}`));
+      if (newCookies.length > 0) {
+        try {
+          await context.addCookies(newCookies);
+          console.log(`[cookies] 已注入 ${newCookies.length}/${cookies.length} 个 ${platform} cookies (跳过${cookies.length - newCookies.length}个重复)`);
+        } catch (e) {
+          console.error(`[cookies] 注入${platform} cookies失败: ${e.message}`);
+        }
+      } else {
+        console.log(`[cookies] ${platform}: ${cookies.length} 个cookies已存在，跳过注入`);
       }
+    } else {
+      console.log(`[cookies] ${platform}: 无可用cookies`);
     }
   }
+  // Verify
+  const all = await context.cookies();
+  const jdAuth = all.filter(c => (c.domain||"").includes("jd") && ["pin","thor","unick"].includes(c.name));
+  console.log(`[cookies] 验证: 共${all.length}个, JD认证cookies: ${jdAuth.length}个 (${jdAuth.map(c=>c.name).join(",")})`);
 }
 
 async function getPage(tenantId) {
@@ -149,6 +168,10 @@ function releasePage(tenantId, page) {
   page.close().catch(() => {});
   if (entry.pageCount > 0) entry.pageCount--;
   entry.busy = false;
+  // Clean up any extra pages that accumulated (keep at most 1 blank page)
+  if (entry.pageCount <= 0) {
+    cleanupPages(entry.context).catch(() => {});
+  }
 }
 
 async function closeTenant(tenantId) {

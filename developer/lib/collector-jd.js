@@ -7,15 +7,26 @@ const path = require("path");
 
 // ── JD 商品搜索 ─────────────────────────────────────────────────
 
-async function searchJdProducts(page, brandName, maxPages = 3) {
+async function searchJdProducts(page, brandName, maxPages = 1) {
   const allProducts = [];
 
   for (let pg = 1; pg <= maxPages; pg++) {
     // JD pagination uses odd numbers: page 1 → param 1, page 2 → param 3, etc.
     const searchUrl = `https://search.jd.com/Search?keyword=${encodeURIComponent(brandName)}&enc=utf-8&page=${2 * pg - 1}`;
 
+    // First page: warm up on JD home to establish session before hitting search
+    if (pg === 1) {
+      const currentUrl = page.url();
+      if (!currentUrl.includes("jd.com") || currentUrl.includes("passport")) {
+        try {
+          await page.goto("https://www.jd.com/", { waitUntil: "domcontentloaded", timeout: 20000 });
+          await page.waitForTimeout(2000 + Math.random() * 2000);
+        } catch (e) { /* continue */ }
+      }
+    }
+
     try {
-      await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000, referer: "https://www.jd.com/" });
     } catch (e) { /* timeout ok */ }
 
     await page.waitForTimeout(5000);
@@ -253,12 +264,13 @@ async function detectJdPageState(page) {
     const text = document.body?.innerText || "";
     const url = location.href || "";
 
-    // Login wall
+    // Login wall — only flag if on passport/login page, not JD homepage
     if (url.includes("passport.jd.com") || url.includes("plogin.m.jd.com")) {
       return { blocked: true, reason: "login_wall", detail: "需要登录京东账号" };
     }
-    if ((text.includes("请登录") || text.includes("登录页面")) && text.length < 2000) {
-      return { blocked: true, reason: "login_wall", detail: "需要登录京东账号" };
+    // JD homepage redirect with rate limiting (from=pc_search_sd)
+    if (url.includes("www.jd.com/?from=pc_search")) {
+      return { blocked: true, reason: "rate_limit", detail: "京东搜索限流，请稍后重试" };
     }
 
     // Anti-bot / captcha

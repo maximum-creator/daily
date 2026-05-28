@@ -7,7 +7,7 @@ const path = require("path");
 
 // ── 搜索天猫商品（五层回退策略）────────────────────────────────
 
-async function searchTmallProducts(page, brandName, maxPages = 3) {
+async function searchTmallProducts(page, brandName, maxPages = 1) {
   const allProducts = [];
 
   // Strategy 1: API response interception — capture before DOM
