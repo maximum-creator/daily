@@ -137,7 +137,24 @@ async function getPage(tenantId) {
   const dir = profileDir(tenantId);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  const context = await chromium.launchPersistentContext(dir, getBrowserOptions(false));
+  // If another context is using this profile (e.g., login in progress),
+  // retry with backoff to avoid file-lock conflict
+  let context;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      context = await chromium.launchPersistentContext(dir, getBrowserOptions(false));
+      break;
+    } catch (e) {
+      if (attempt < 4 && (e.message.includes("Target page") || e.message.includes("closed") || e.message.includes("session"))) {
+        console.log(`[pool] profile被占用，等待重试 (${attempt + 1}/5)...`);
+        await new Promise(r => setTimeout(r, 2000));
+      } else {
+        throw e;
+      }
+    }
+  }
+  if (!context) throw new Error("无法创建浏览器上下文：profile被占用");
+
   await initScript(context);
   await cleanupPages(context);
   await injectCookies(tenantId, context);

@@ -102,6 +102,10 @@ app.post("/api/v1/login", async (req, res) => {
   (async () => {
     let browser;
     try {
+      // Close any existing context using this profile BEFORE opening a new one.
+      // Two contexts at the same userDataDir = file-lock conflict = page explosion.
+      await closeTenant(tenantId);
+
       const userDataDir = path.join(PROFILES_DIR, tenantId);
       browser = await chromium.launchPersistentContext(userDataDir, getBrowserOptions(false));
       await initScript(browser);
