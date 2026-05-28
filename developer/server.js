@@ -17,6 +17,7 @@ const { collectBrandSnapshot: collectJdSnapshot, compareSnapshots: compareJdSnap
 const { collectBrandSnapshot: collectPddSnapshot, compareSnapshots: comparePddSnapshots, saveSnapshot: savePddSnapshot, loadSnapshot: loadPddSnapshot, detectPddPageState } = require("./lib/collector-pdd");
 const { collectBrandSnapshot: collectDouyinSnapshot, compareSnapshots: compareDouyinSnapshots, saveSnapshot: saveDouyinSnapshot, loadSnapshot: loadDouyinSnapshot, detectDouyinPageState } = require("./lib/collector-douyin");
 const { collectBrandSnapshot: collectSuningSnapshot, compareSnapshots: compareSuningSnapshots, saveSnapshot: saveSuningSnapshot, loadSnapshot: loadSuningSnapshot, detectSuningPageState } = require("./lib/collector-suning");
+const { collectBrandSnapshot: collectDangdangSnapshot, compareSnapshots: compareDangdangSnapshots, saveSnapshot: saveDangdangSnapshot, loadSnapshot: loadDangdangSnapshot, detectDangdangPageState } = require("./lib/collector-dangdang");
 const { aggregateAll, analyzeTrend, detectAnomalies, brandHealthScore, generateSuggestions } = require("./lib/signal-aggregator");
 const { generateDailyBrief, briefToHtml } = require("./lib/report-generator");
 const { instantAnalyze } = require("./lib/instant-analyzer");
@@ -71,6 +72,7 @@ app.get("/api/v1/health", async (req, res) => {
       pddReady: platforms.pdd,
       douyinReady: platforms.douyin,
       suningReady: platforms.suning,
+      dangdangReady: platforms.dangdang,
     };
   }
   const smtpStatus = await mailer.verifyConnection();
@@ -294,7 +296,7 @@ app.post("/api/v1/login", async (req, res) => {
 });
 
 function platformLabel(p) {
-  return { tmall: "淘宝/天猫", jd: "京东", pdd: "拼多多", douyin: "抖音电商", suning: "苏宁易购", both: "淘宝+京东" }[p] || p;
+  return { tmall: "淘宝/天猫", jd: "京东", pdd: "拼多多", douyin: "抖音电商", suning: "苏宁易购", dangdang: "当当网", both: "淘宝+京东" }[p] || p;
 }
 
 // ── POST /api/v1/search — 搜索竞品品牌（天猫+京东双源采集） ────
@@ -304,15 +306,16 @@ app.post("/api/v1/search", async (req, res) => {
   if (!brand) return res.json({ code: 400, message: "缺少 brand 参数" });
 
   const platforms = getPlatformStatus(tenantId);
-  if (!platforms.tmall && !platforms.jd && !platforms.pdd && !platforms.douyin && !platforms.suning) {
+  if (!platforms.tmall && !platforms.jd && !platforms.pdd && !platforms.douyin && !platforms.suning && !platforms.dangdang) {
     return res.json({
       code: 401,
-      message: "请先登录至少一个数据源（天猫/京东/拼多多/抖音/苏宁）",
+      message: "请先登录至少一个数据源（天猫/京东/拼多多/抖音/苏宁/当当）",
       tmallReady: false,
       jdReady: false,
       pddReady: false,
       douyinReady: false,
       suningReady: false,
+      dangdangReady: false,
     });
   }
 
@@ -336,7 +339,7 @@ app.post("/api/v1/search", async (req, res) => {
 
   try {
     const result = await runCollection(tenantId, brand);
-    res.json({ code: 0, data: result, tmallReady: platforms.tmall, jdReady: platforms.jd, pddReady: platforms.pdd, douyinReady: platforms.douyin, suningReady: platforms.suning });
+    res.json({ code: 0, data: result, tmallReady: platforms.tmall, jdReady: platforms.jd, pddReady: platforms.pdd, douyinReady: platforms.douyin, suningReady: platforms.suning, dangdangReady: platforms.dangdang });
   } catch (e) {
     res.status(500).json({ code: 500, message: `采集异常: ${e.message}` });
   }
@@ -449,6 +452,13 @@ app.get("/api/v1/export", (req, res) => {
     }
   }
 
+  const ddSnap = loadDangdangSnapshot(DATA_DIR, tenantId, brand, date);
+  if (ddSnap && ddSnap.products) {
+    for (const p of ddSnap.products) {
+      rows.push(["当当网", p.name, String(p.price || ""), String(p.salesDisplay || ""), String(p.shop || ""), "N/A"]);
+    }
+  }
+
   const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
 
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
@@ -520,7 +530,7 @@ app.get("/api/v1/debug", async (req, res) => {
   };
 
   // Check cookie files
-  for (const p of ["tmall", "jd", "pdd", "douyin", "suning"]) {
+  for (const p of ["tmall", "jd", "pdd", "douyin", "suning", "dangdang"]) {
     const fp = path.join(PROFILES_DIR, tenantId, `cookies-${p}.json`);
     if (fs.existsSync(fp)) {
       try {
@@ -545,6 +555,7 @@ app.get("/api/v1/debug", async (req, res) => {
       jd: `https://search.jd.com/Search?keyword=${encodeURIComponent(brand)}&enc=utf-8`,
       pdd: `https://mobile.yangkeduo.com/search_result.html?search_key=${encodeURIComponent(brand)}`,
       douyin: `https://mall.douyin.com/search?keyword=${encodeURIComponent(brand)}`,
+      dangdang: `https://search.dangdang.com/?key=${encodeURIComponent(brand)}`,
       suning: `https://search.suning.com/${encodeURIComponent(brand)}/`,
       tmall: `https://s.taobao.com/search?q=${encodeURIComponent(brand)}&tab=mall`,
     };
@@ -561,7 +572,7 @@ app.get("/api/v1/debug", async (req, res) => {
     // Check page state
     const stateDetectors = {
       jd: detectJdPageState, pdd: detectPddPageState,
-      douyin: detectDouyinPageState, suning: detectSuningPageState, tmall: detectPageState,
+      douyin: detectDouyinPageState, suning: detectSuningPageState, dangdang: detectDangdangPageState, tmall: detectPageState,
     };
     const detector = stateDetectors[platform] || stateDetectors.tmall;
     const state = await detector(page).catch(() => ({ blocked: false }));
@@ -634,7 +645,7 @@ app.get("/api/v1/debug", async (req, res) => {
 
       const collectors = {
         jd: "./lib/collector-jd", pdd: "./lib/collector-pdd",
-        douyin: "./lib/collector-douyin", suning: "./lib/collector-suning", tmall: "./lib/collector-tmall",
+        douyin: "./lib/collector-douyin", suning: "./lib/collector-suning", dangdang: "./lib/collector-dangdang", tmall: "./lib/collector-tmall",
       };
       const collector = require(collectors[platform] || collectors.tmall);
       const snapshot = await collector.collectBrandSnapshot(page, brand);
@@ -675,18 +686,20 @@ async function runCollection(tenantId, brand) {
   const cachePdd = platforms.pdd ? loadPddSnapshot(DATA_DIR, tenantId, brand, todayStr) : null;
   const cacheDy = platforms.douyin ? loadDouyinSnapshot(DATA_DIR, tenantId, brand, todayStr) : null;
   const cacheSn = platforms.suning ? loadSuningSnapshot(DATA_DIR, tenantId, brand, todayStr) : null;
+  const cacheDd = platforms.dangdang ? loadDangdangSnapshot(DATA_DIR, tenantId, brand, todayStr) : null;
 
   // If ALL ready platforms have cached data, return merged result
-  const readyPlatforms = [platforms.tmall, platforms.jd, platforms.pdd, platforms.douyin, platforms.suning].filter(Boolean).length;
-  const cachedPlatforms = [cacheTm, cacheJd, cachePdd, cacheDy, cacheSn].filter(c => c && c.productCount > 0).length;
+  const readyPlatforms = [platforms.tmall, platforms.jd, platforms.pdd, platforms.douyin, platforms.suning, platforms.dangdang].filter(Boolean).length;
+  const cachedPlatforms = [cacheTm, cacheJd, cachePdd, cacheDy, cacheSn, cacheDd].filter(c => c && c.productCount > 0).length;
   if (readyPlatforms > 0 && cachedPlatforms >= readyPlatforms) {
-    console.log(`[collect] 全部缓存命中: tmall=${cacheTm?.productCount||0}, jd=${cacheJd?.productCount||0}, pdd=${cachePdd?.productCount||0}, douyin=${cacheDy?.productCount||0}, suning=${cacheSn?.productCount||0}`);
+    console.log(`[collect] 全部缓存命中: tmall=${cacheTm?.productCount||0}, jd=${cacheJd?.productCount||0}, pdd=${cachePdd?.productCount||0}, douyin=${cacheDy?.productCount||0}, suning=${cacheSn?.productCount||0}, dangdang=${cacheDd?.productCount||0}`);
     const allSignals = [];
     if (cacheTm) { const comp = compareSnapshots(cacheTm, loadSnapshot(DATA_DIR, tenantId, brand, yStr)); allSignals.push(...comp.signals.map(s => ({...s, source:"tmall"}))); }
     if (cacheJd) { const comp = compareJdSnapshots(cacheJd, loadJdSnapshot(DATA_DIR, tenantId, brand, yStr)); allSignals.push(...comp.signals.map(s => ({...s, source:"jd"}))); }
     if (cachePdd) { const comp = comparePddSnapshots(cachePdd, loadPddSnapshot(DATA_DIR, tenantId, brand, yStr)); allSignals.push(...comp.signals.map(s => ({...s, source:"pdd"}))); }
     if (cacheDy) { const comp = compareDouyinSnapshots(cacheDy, loadDouyinSnapshot(DATA_DIR, tenantId, brand, yStr)); allSignals.push(...comp.signals.map(s => ({...s, source:"douyin"}))); }
     if (cacheSn) { const comp = compareSuningSnapshots(cacheSn, loadSuningSnapshot(DATA_DIR, tenantId, brand, yStr)); allSignals.push(...comp.signals.map(s => ({...s, source:"suning"}))); }
+    if (cacheDd) { const comp = compareDangdangSnapshots(cacheDd, loadDangdangSnapshot(DATA_DIR, tenantId, brand, yStr)); allSignals.push(...comp.signals.map(s => ({...s, source:"dangdang"}))); }
     const combinedComparison = { signals: allSignals, isNew: allSignals.length === 0 };
     const brief = generateDailyBrief(brand, todayStr, combinedComparison, { productCount: { values:[], trend:"stable" }, avgPrice: { values:[], trend:"stable" } }, []);
     brief.healthScore = 50;
@@ -696,8 +709,9 @@ async function runCollection(tenantId, brand) {
     if (cachePdd) brief.sources.push("pdd");
     if (cacheDy) brief.sources.push("douyin");
     if (cacheSn) brief.sources.push("suning");
+    if (cacheDd) brief.sources.push("dangdang");
     saveReport(DATA_DIR, tenantId, brand, brief);
-    return { tmSnapshot: cacheTm, jdSnapshot: cacheJd, pddSnapshot: cachePdd, douyinSnapshot: cacheDy, suningSnapshot: cacheSn, signals: allSignals, brief };
+    return { tmSnapshot: cacheTm, jdSnapshot: cacheJd, pddSnapshot: cachePdd, douyinSnapshot: cacheDy, suningSnapshot: cacheSn, dangdangSnapshot: cacheDd, signals: allSignals, brief };
   }
 
   let page;
@@ -707,12 +721,13 @@ async function runCollection(tenantId, brand) {
   let pddSnapshot = cachePdd;
   let dySnapshot = cacheDy;
   let snSnapshot = cacheSn;
+  let ddSnapshot = cacheDd;
   const errors = [];
 
   try {
     page = await getPage(tenantId);
     console.log(`[collect] 页面已获取`);
-    console.log(`[collect] 平台状态: tmall=${platforms.tmall}, jd=${platforms.jd}, pdd=${platforms.pdd}, douyin=${platforms.douyin}, suning=${platforms.suning}`);
+    console.log(`[collect] 平台状态: tmall=${platforms.tmall}, jd=${platforms.jd}, pdd=${platforms.pdd}, douyin=${platforms.douyin}, suning=${platforms.suning}, dangdang=${platforms.dangdang}`);
 
     // ── Tmall collection (skip if cached today) ──
     if (platforms.tmall && !tmSnapshot) {
@@ -819,12 +834,32 @@ async function runCollection(tenantId, brand) {
       }
     }
 
+    // ── Dangdang collection (skip if cached today) ──
+    if (platforms.dangdang && !ddSnapshot) {
+      try {
+        console.log(`[collect] 当当采集开始: ${brand}`);
+        ddSnapshot = await collectDangdangSnapshot(page, brand);
+        console.log(`[collect] 当当完成: ${ddSnapshot.productCount} 个商品`);
+        if (ddSnapshot.productCount > 0) {
+          saveDangdangSnapshot(DATA_DIR, tenantId, brand, ddSnapshot);
+          const prevDd = loadDangdangSnapshot(DATA_DIR, tenantId, brand, yStr);
+          const ddComp = compareDangdangSnapshots(ddSnapshot, prevDd || null);
+          allSignals.push(...ddComp.signals.map(s => ({ ...s, source: "dangdang" })));
+        } else {
+          errors.push("当当: 未采集到商品数据（可能触发反爬或页面结构变化）");
+        }
+      } catch (e) {
+        errors.push(`当当采集失败: ${e.message}`);
+        console.error(`[dangdang] ${brand}: ${e.message}`);
+      }
+    }
+
     // No data at all
-    if (!tmSnapshot && !jdSnapshot && !pddSnapshot && !dySnapshot && !snSnapshot) {
+    if (!tmSnapshot && !jdSnapshot && !pddSnapshot && !dySnapshot && !snSnapshot && !ddSnapshot) {
       throw new Error("所有数据源采集失败");
     }
 
-    const totalProducts = (tmSnapshot?.productCount || 0) + (jdSnapshot?.productCount || 0) + (pddSnapshot?.productCount || 0) + (dySnapshot?.productCount || 0) + (snSnapshot?.productCount || 0);
+    const totalProducts = (tmSnapshot?.productCount || 0) + (jdSnapshot?.productCount || 0) + (pddSnapshot?.productCount || 0) + (dySnapshot?.productCount || 0) + (snSnapshot?.productCount || 0) + (ddSnapshot?.productCount || 0);
     if (totalProducts === 0) {
       throw new Error(errors.join("; ") || "所有数据源均未返回商品数据");
     }
@@ -841,12 +876,13 @@ async function runCollection(tenantId, brand) {
 
     // Day-1: generate instant analysis for immediate value
     let instantResult = null;
-    if (isFirstCollection && (tmSnapshot?.productCount > 0 || pddSnapshot?.productCount > 0 || dySnapshot?.productCount > 0 || snSnapshot?.productCount > 0)) {
+    if (isFirstCollection && (tmSnapshot?.productCount > 0 || pddSnapshot?.productCount > 0 || dySnapshot?.productCount > 0 || snSnapshot?.productCount > 0 || ddSnapshot?.productCount > 0)) {
       instantResult = instantAnalyze(brand,
         tmSnapshot?.products || [],
         pddSnapshot?.products || [],
         dySnapshot?.products || [],
-        snSnapshot?.products || []
+        snSnapshot?.products || [],
+        ddSnapshot?.products || []
       );
     }
 
@@ -869,11 +905,12 @@ async function runCollection(tenantId, brand) {
     if (pddSnapshot && pddSnapshot.productCount > 0) brief.sources.push("pdd");
     if (dySnapshot && dySnapshot.productCount > 0) brief.sources.push("douyin");
     if (snSnapshot && snSnapshot.productCount > 0) brief.sources.push("suning");
+    if (ddSnapshot && ddSnapshot.productCount > 0) brief.sources.push("dangdang");
     if (errors.length > 0) brief.warnings = errors;
     saveReport(DATA_DIR, tenantId, brand, brief);
 
     releasePage(tenantId, page);
-    return { tmSnapshot, jdSnapshot, pddSnapshot, douyinSnapshot: dySnapshot, suningSnapshot: snSnapshot, signals: allSignals, brief, warnings: errors.length > 0 ? errors : undefined };
+    return { tmSnapshot, jdSnapshot, pddSnapshot, douyinSnapshot: dySnapshot, suningSnapshot: snSnapshot, dangdangSnapshot: ddSnapshot, signals: allSignals, brief, warnings: errors.length > 0 ? errors : undefined };
   } catch (e) {
     if (page) releasePage(tenantId, page);
     throw e;

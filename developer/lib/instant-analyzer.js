@@ -149,7 +149,7 @@ function instantRiskScore(tmProducts, pddProducts) {
 
 // ── 综合即时报告 ───────────────────────────────────────────────────
 
-function instantAnalyze(brand, tmProducts, pddProducts, dyProducts, snProducts) {
+function instantAnalyze(brand, tmProducts, pddProducts, dyProducts, snProducts, ddProducts) {
   const sections = [];
 
   // Price structure
@@ -193,6 +193,16 @@ function instantAnalyze(brand, tmProducts, pddProducts, dyProducts, snProducts) 
     });
   }
 
+  const ddTiers = priceTiers(ddProducts);
+  if (ddTiers) {
+    sections.push({
+      title: "当当网价格结构",
+      body: `最低 ¥${ddTiers.min} / 中位 ¥${ddTiers.median} / 最高 ¥${ddTiers.max}\n`
+          + `价格分层: 入门档 ${ddTiers.tierPct.entry}% | 中端 ${ddTiers.tierPct.mid}% | 高端 ${ddTiers.tierPct.premium}% | 奢侈 ${ddTiers.tierPct.luxury}%\n`
+          + `样本量: ${ddTiers.count} 件`,
+    });
+  }
+
   // Cross-platform gap
   const gap = crossPlatformGap(tmProducts, pddProducts);
   if (gap) {
@@ -205,7 +215,7 @@ function instantAnalyze(brand, tmProducts, pddProducts, dyProducts, snProducts) 
   }
 
   // Store structure
-  const allProducts = [...(tmProducts || []), ...(pddProducts || []), ...(dyProducts || []), ...(snProducts || [])];
+  const allProducts = [...(tmProducts || []), ...(pddProducts || []), ...(dyProducts || []), ...(snProducts || []), ...(ddProducts || [])];
   const struct = storeStructure(allProducts);
   if (struct) {
     sections.push({
@@ -217,7 +227,7 @@ function instantAnalyze(brand, tmProducts, pddProducts, dyProducts, snProducts) 
   }
 
   // Concentration (use primary source: TMall > PDD > Douyin)
-  const conc = concentration(tmProducts) || concentration(pddProducts) || concentration(dyProducts) || concentration(snProducts);
+  const conc = concentration(tmProducts) || concentration(pddProducts) || concentration(dyProducts) || concentration(snProducts) || concentration(ddProducts);
   if (conc) {
     sections.push({
       title: "头部集中度",
@@ -242,7 +252,7 @@ function instantAnalyze(brand, tmProducts, pddProducts, dyProducts, snProducts) 
     isInstant: true,
     strategy: { type: strategy, label: CHANNEL_LABELS[strategy] || strategy },
     risk,
-    priceTiers: { tm: tmTiers, pdd: pddTiers, dy: dyTiers, sn: snTiers },
+    priceTiers: { tm: tmTiers, pdd: pddTiers, dy: dyTiers, sn: snTiers, dd: ddTiers },
     crossPlatformGap: gap,
     storeStructure: struct,
     concentration: conc,
