@@ -100,6 +100,11 @@ input,button{font-family:inherit}
       <button class="btn btn-outline btn-sm" id="loginDouyinBtn" onclick="doLogin('douyin')">登录抖音</button>
       <span style="font-size:12px;color:#999" id="douyinHint">搜索通常无需登录</span>
     </div>
+    <div class="platform-row" style="margin-top:8px">
+      <span>苏宁易购：</span>
+      <span class="platform-badge platform-ready" id="suningBadge">免登录</span>
+      <span style="font-size:12px;color:#27ae60" id="suningHint">无头采集，无需登录</span>
+    </div>
     <div class="status" id="loginMsg">登录后即可采集对应平台的商品数据</div>
   </div>
 
@@ -173,6 +178,7 @@ let tmallReady = false;
 let jdReady = false;
 let pddReady = false;
 let douyinReady = false;
+let suningReady = false;
 let compareList = [];
 
 // ── Init ──────────────────────────────────────────────────────
@@ -197,6 +203,7 @@ async function checkLogin() {
       jdReady = !!res.tenants[tid].jdReady;
       pddReady = !!res.tenants[tid].pddReady;
       douyinReady = !!res.tenants[tid].douyinReady;
+      suningReady = !!res.tenants[tid].suningReady;
       updateLoginUI();
     }
   } catch(e) {}
@@ -267,11 +274,24 @@ function updateLoginUI() {
     douyinHint.textContent = "搜索通常无需登录";
   }
 
-  const readyCount = (tmallReady ? 1 : 0) + (jdReady ? 1 : 0) + (pddReady ? 1 : 0) + (douyinReady ? 1 : 0);
-  const totalPlatforms = 4;
+  // Suning — always ready (headless, no login required)
+  const suningBadge = document.getElementById("suningBadge");
+  const suningHint = document.getElementById("suningHint");
+  if (suningReady) {
+    suningBadge.textContent = "就绪";
+    suningBadge.className = "platform-badge platform-ready";
+    suningHint.textContent = "✓ 无头采集可用";
+  } else {
+    suningBadge.textContent = "免登录";
+    suningBadge.className = "platform-badge platform-ready";
+    suningHint.textContent = "无头采集，无需登录";
+  }
+
+  const readyCount = (tmallReady ? 1 : 0) + (jdReady ? 1 : 0) + (pddReady ? 1 : 0) + (douyinReady ? 1 : 0) + (suningReady ? 1 : 0);
+  const totalPlatforms = 5;
   document.getElementById("loginMsg").textContent =
     readyCount === 0 ? "请登录至少一个数据源后开始监测" :
-    readyCount === totalPlatforms ? "四数据源就绪，可同时采集天猫+京东+拼多多+抖音" :
+    readyCount === totalPlatforms ? "五数据源就绪，可同时采集天猫+京东+拼多多+抖音+苏宁" :
     `已就绪 ${readyCount}/${totalPlatforms} 数据源，可开始监测`;
 }
 
@@ -335,7 +355,7 @@ async function doSearch() {
     return;
   }
 
-  if (!tmallReady && !jdReady && !pddReady) {
+  if (!tmallReady && !jdReady && !pddReady && !douyinReady && !suningReady) {
     document.getElementById("searchStatus").innerHTML = '<span class="status error">请先登录至少一个数据源</span>';
     return;
   }
@@ -349,13 +369,15 @@ async function doSearch() {
   if (tmallReady) sources.push("天猫");
   if (jdReady) sources.push("京东");
   if (pddReady) sources.push("拼多多");
+  if (douyinReady) sources.push("抖音");
+  if (suningReady) sources.push("苏宁");
   status.innerHTML = `<span class="status">正在采集${sources.join("+")}数据，请稍候…</span>`;
 
   try {
     const res = await api("POST", "/search", { brand });
     if (res.code === 0) {
       const brief = res.data.brief;
-      const srcLabel = (brief.sources || []).map(s => ({ tmall: "天猫", jd: "京东", pdd: "拼多多" }[s] || s)).join("+") || "无数据";
+      const srcLabel = (brief.sources || []).map(s => ({ tmall: "天猫", jd: "京东", pdd: "拼多多", douyin: "抖音", suning: "苏宁" }[s] || s)).join("+") || "无数据";
       const hasWarnings = brief.warnings && brief.warnings.length > 0;
       status.innerHTML = `<span class="status success">采集完成 (${srcLabel}) ✓</span>`;
       if (hasWarnings) {
@@ -487,7 +509,7 @@ async function doCompare() {
               </td>
               <td style="padding:8px;text-align:center;font-size:11px">
                 ${(d.sources || []).map(s => {
-                  const cfg = { tmall: { bg: '#ffebee', fg: '#c62828', label: '猫' }, jd: { bg: '#e3f2fd', fg: '#1565c0', label: '京' }, pdd: { bg: '#fce4ec', fg: '#c62828', label: '多' } }[s] || { bg: '#eee', fg: '#666', label: s };
+                  const cfg = { tmall: { bg: '#ffebee', fg: '#c62828', label: '猫' }, jd: { bg: '#e3f2fd', fg: '#1565c0', label: '京' }, pdd: { bg: '#fce4ec', fg: '#c62828', label: '多' }, douyin: { bg: '#f3e5f5', fg: '#7b1fa2', label: '抖' }, suning: { bg: '#fff8e1', fg: '#f57f17', label: '苏' } }[s] || { bg: '#eee', fg: '#666', label: s };
                   return `<span style="padding:1px 5px;border-radius:3px;background:${cfg.bg};color:${cfg.fg};margin:0 1px">${cfg.label}</span>`;
                 }).join("") || "N/A"}
               </td>
@@ -531,7 +553,7 @@ function showReport(brief) {
   const sources = brief.sources || [];
   const srcBadges = sources.length > 0
     ? sources.map(s => {
-        const cfg = { tmall: { bg: '#ffebee', fg: '#c62828', label: '天猫' }, jd: { bg: '#e3f2fd', fg: '#1565c0', label: '京东' }, pdd: { bg: '#fce4ec', fg: '#c62828', label: '拼多多' } }[s] || { bg: '#eee', fg: '#666', label: s };
+        const cfg = { tmall: { bg: '#ffebee', fg: '#c62828', label: '天猫' }, jd: { bg: '#e3f2fd', fg: '#1565c0', label: '京东' }, pdd: { bg: '#fce4ec', fg: '#c62828', label: '拼多多' }, douyin: { bg: '#f3e5f5', fg: '#7b1fa2', label: '抖音' }, suning: { bg: '#fff8e1', fg: '#f57f17', label: '苏宁' } }[s] || { bg: '#eee', fg: '#666', label: s };
         return `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:6px;background:${cfg.bg};color:${cfg.fg}">${cfg.label}</span>`;
       }).join("")
     : "";

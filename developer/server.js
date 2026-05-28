@@ -16,6 +16,7 @@ const { collectBrandSnapshot, compareSnapshots, saveSnapshot, loadSnapshot, dete
 const { collectBrandSnapshot: collectJdSnapshot, compareSnapshots: compareJdSnapshots, saveSnapshot: saveJdSnapshot, loadSnapshot: loadJdSnapshot, detectJdPageState } = require("./lib/collector-jd");
 const { collectBrandSnapshot: collectPddSnapshot, compareSnapshots: comparePddSnapshots, saveSnapshot: savePddSnapshot, loadSnapshot: loadPddSnapshot, detectPddPageState } = require("./lib/collector-pdd");
 const { collectBrandSnapshot: collectDouyinSnapshot, compareSnapshots: compareDouyinSnapshots, saveSnapshot: saveDouyinSnapshot, loadSnapshot: loadDouyinSnapshot, detectDouyinPageState } = require("./lib/collector-douyin");
+const { collectBrandSnapshot: collectSuningSnapshot, compareSnapshots: compareSuningSnapshots, saveSnapshot: saveSuningSnapshot, loadSnapshot: loadSuningSnapshot, detectSuningPageState } = require("./lib/collector-suning");
 const { aggregateAll, analyzeTrend, detectAnomalies, brandHealthScore, generateSuggestions } = require("./lib/signal-aggregator");
 const { generateDailyBrief, briefToHtml } = require("./lib/report-generator");
 const { instantAnalyze } = require("./lib/instant-analyzer");
@@ -69,6 +70,7 @@ app.get("/api/v1/health", async (req, res) => {
       jdReady: platforms.jd,
       pddReady: platforms.pdd,
       douyinReady: platforms.douyin,
+      suningReady: platforms.suning,
     };
   }
   const smtpStatus = await mailer.verifyConnection();
@@ -292,7 +294,7 @@ app.post("/api/v1/login", async (req, res) => {
 });
 
 function platformLabel(p) {
-  return { tmall: "淘宝/天猫", jd: "京东", pdd: "拼多多", douyin: "抖音电商", both: "淘宝+京东" }[p] || p;
+  return { tmall: "淘宝/天猫", jd: "京东", pdd: "拼多多", douyin: "抖音电商", suning: "苏宁易购", both: "淘宝+京东" }[p] || p;
 }
 
 // ── POST /api/v1/search — 搜索竞品品牌（天猫+京东双源采集） ────
@@ -302,14 +304,15 @@ app.post("/api/v1/search", async (req, res) => {
   if (!brand) return res.json({ code: 400, message: "缺少 brand 参数" });
 
   const platforms = getPlatformStatus(tenantId);
-  if (!platforms.tmall && !platforms.jd && !platforms.pdd && !platforms.douyin) {
+  if (!platforms.tmall && !platforms.jd && !platforms.pdd && !platforms.douyin && !platforms.suning) {
     return res.json({
       code: 401,
-      message: "请先登录至少一个数据源（天猫/京东/拼多多/抖音）",
+      message: "请先登录至少一个数据源（天猫/京东/拼多多/抖音/苏宁）",
       tmallReady: false,
       jdReady: false,
       pddReady: false,
       douyinReady: false,
+      suningReady: false,
     });
   }
 
@@ -333,7 +336,7 @@ app.post("/api/v1/search", async (req, res) => {
 
   try {
     const result = await runCollection(tenantId, brand);
-    res.json({ code: 0, data: result, tmallReady: platforms.tmall, jdReady: platforms.jd, pddReady: platforms.pdd, douyinReady: platforms.douyin });
+    res.json({ code: 0, data: result, tmallReady: platforms.tmall, jdReady: platforms.jd, pddReady: platforms.pdd, douyinReady: platforms.douyin, suningReady: platforms.suning });
   } catch (e) {
     res.status(500).json({ code: 500, message: `采集异常: ${e.message}` });
   }
@@ -392,7 +395,7 @@ app.get("/api/v1/admin/overview", adminAuth, (req, res) => {
     const platforms = getPlatformStatus(id);
     rows.push({
       id, name: t.name, plan: t.plan, planLabel: plan.name,
-      monthlyFee: plan.monthlyFee, tmallReady: platforms.tmall, jdReady: platforms.jd, pddReady: platforms.pdd, douyinReady: platforms.douyin,
+      monthlyFee: plan.monthlyFee, tmallReady: platforms.tmall, jdReady: platforms.jd, pddReady: platforms.pdd, douyinReady: platforms.douyin, suningReady: platforms.suning,
     });
   }
   res.json({ code: 0, data: { tenants: rows } });
@@ -436,6 +439,13 @@ app.get("/api/v1/export", (req, res) => {
   if (dySnap && dySnap.products) {
     for (const p of dySnap.products) {
       rows.push(["抖音电商", p.name, String(p.price || ""), String(p.salesDisplay || ""), String(p.shop || ""), "N/A"]);
+    }
+  }
+
+  const snSnap = loadSuningSnapshot(DATA_DIR, tenantId, brand, date);
+  if (snSnap && snSnap.products) {
+    for (const p of snSnap.products) {
+      rows.push(["苏宁易购", p.name, String(p.price || ""), String(p.salesDisplay || ""), String(p.shop || ""), p.storeType === "direct" ? "是" : "否"]);
     }
   }
 
@@ -510,7 +520,7 @@ app.get("/api/v1/debug", async (req, res) => {
   };
 
   // Check cookie files
-  for (const p of ["tmall", "jd", "pdd"]) {
+  for (const p of ["tmall", "jd", "pdd", "douyin", "suning"]) {
     const fp = path.join(PROFILES_DIR, tenantId, `cookies-${p}.json`);
     if (fs.existsSync(fp)) {
       try {
@@ -535,6 +545,7 @@ app.get("/api/v1/debug", async (req, res) => {
       jd: `https://search.jd.com/Search?keyword=${encodeURIComponent(brand)}&enc=utf-8`,
       pdd: `https://mobile.yangkeduo.com/search_result.html?search_key=${encodeURIComponent(brand)}`,
       douyin: `https://mall.douyin.com/search?keyword=${encodeURIComponent(brand)}`,
+      suning: `https://search.suning.com/${encodeURIComponent(brand)}/`,
       tmall: `https://s.taobao.com/search?q=${encodeURIComponent(brand)}&tab=mall`,
     };
     const searchUrl = SEARCH_URLS[platform] || SEARCH_URLS.tmall;
@@ -550,7 +561,7 @@ app.get("/api/v1/debug", async (req, res) => {
     // Check page state
     const stateDetectors = {
       jd: detectJdPageState, pdd: detectPddPageState,
-      douyin: detectDouyinPageState, tmall: detectPageState,
+      douyin: detectDouyinPageState, suning: detectSuningPageState, tmall: detectPageState,
     };
     const detector = stateDetectors[platform] || stateDetectors.tmall;
     const state = await detector(page).catch(() => ({ blocked: false }));
@@ -623,7 +634,7 @@ app.get("/api/v1/debug", async (req, res) => {
 
       const collectors = {
         jd: "./lib/collector-jd", pdd: "./lib/collector-pdd",
-        douyin: "./lib/collector-douyin", tmall: "./lib/collector-tmall",
+        douyin: "./lib/collector-douyin", suning: "./lib/collector-suning", tmall: "./lib/collector-tmall",
       };
       const collector = require(collectors[platform] || collectors.tmall);
       const snapshot = await collector.collectBrandSnapshot(page, brand);
@@ -663,17 +674,19 @@ async function runCollection(tenantId, brand) {
   const cacheJd = platforms.jd ? loadJdSnapshot(DATA_DIR, tenantId, brand, todayStr) : null;
   const cachePdd = platforms.pdd ? loadPddSnapshot(DATA_DIR, tenantId, brand, todayStr) : null;
   const cacheDy = platforms.douyin ? loadDouyinSnapshot(DATA_DIR, tenantId, brand, todayStr) : null;
+  const cacheSn = platforms.suning ? loadSuningSnapshot(DATA_DIR, tenantId, brand, todayStr) : null;
 
   // If ALL ready platforms have cached data, return merged result
-  const readyPlatforms = [platforms.tmall, platforms.jd, platforms.pdd, platforms.douyin].filter(Boolean).length;
-  const cachedPlatforms = [cacheTm, cacheJd, cachePdd, cacheDy].filter(c => c && c.productCount > 0).length;
+  const readyPlatforms = [platforms.tmall, platforms.jd, platforms.pdd, platforms.douyin, platforms.suning].filter(Boolean).length;
+  const cachedPlatforms = [cacheTm, cacheJd, cachePdd, cacheDy, cacheSn].filter(c => c && c.productCount > 0).length;
   if (readyPlatforms > 0 && cachedPlatforms >= readyPlatforms) {
-    console.log(`[collect] 全部缓存命中: tmall=${cacheTm?.productCount||0}, jd=${cacheJd?.productCount||0}, pdd=${cachePdd?.productCount||0}, douyin=${cacheDy?.productCount||0}`);
+    console.log(`[collect] 全部缓存命中: tmall=${cacheTm?.productCount||0}, jd=${cacheJd?.productCount||0}, pdd=${cachePdd?.productCount||0}, douyin=${cacheDy?.productCount||0}, suning=${cacheSn?.productCount||0}`);
     const allSignals = [];
     if (cacheTm) { const comp = compareSnapshots(cacheTm, loadSnapshot(DATA_DIR, tenantId, brand, yStr)); allSignals.push(...comp.signals.map(s => ({...s, source:"tmall"}))); }
     if (cacheJd) { const comp = compareJdSnapshots(cacheJd, loadJdSnapshot(DATA_DIR, tenantId, brand, yStr)); allSignals.push(...comp.signals.map(s => ({...s, source:"jd"}))); }
     if (cachePdd) { const comp = comparePddSnapshots(cachePdd, loadPddSnapshot(DATA_DIR, tenantId, brand, yStr)); allSignals.push(...comp.signals.map(s => ({...s, source:"pdd"}))); }
     if (cacheDy) { const comp = compareDouyinSnapshots(cacheDy, loadDouyinSnapshot(DATA_DIR, tenantId, brand, yStr)); allSignals.push(...comp.signals.map(s => ({...s, source:"douyin"}))); }
+    if (cacheSn) { const comp = compareSuningSnapshots(cacheSn, loadSuningSnapshot(DATA_DIR, tenantId, brand, yStr)); allSignals.push(...comp.signals.map(s => ({...s, source:"suning"}))); }
     const combinedComparison = { signals: allSignals, isNew: allSignals.length === 0 };
     const brief = generateDailyBrief(brand, todayStr, combinedComparison, { productCount: { values:[], trend:"stable" }, avgPrice: { values:[], trend:"stable" } }, []);
     brief.healthScore = 50;
@@ -682,8 +695,9 @@ async function runCollection(tenantId, brand) {
     if (cacheJd) brief.sources.push("jd");
     if (cachePdd) brief.sources.push("pdd");
     if (cacheDy) brief.sources.push("douyin");
+    if (cacheSn) brief.sources.push("suning");
     saveReport(DATA_DIR, tenantId, brand, brief);
-    return { tmSnapshot: cacheTm, jdSnapshot: cacheJd, pddSnapshot: cachePdd, douyinSnapshot: cacheDy, signals: allSignals, brief };
+    return { tmSnapshot: cacheTm, jdSnapshot: cacheJd, pddSnapshot: cachePdd, douyinSnapshot: cacheDy, suningSnapshot: cacheSn, signals: allSignals, brief };
   }
 
   let page;
@@ -692,12 +706,13 @@ async function runCollection(tenantId, brand) {
   let jdSnapshot = cacheJd;
   let pddSnapshot = cachePdd;
   let dySnapshot = cacheDy;
+  let snSnapshot = cacheSn;
   const errors = [];
 
   try {
     page = await getPage(tenantId);
     console.log(`[collect] 页面已获取`);
-    console.log(`[collect] 平台状态: tmall=${platforms.tmall}, jd=${platforms.jd}, pdd=${platforms.pdd}, douyin=${platforms.douyin}`);
+    console.log(`[collect] 平台状态: tmall=${platforms.tmall}, jd=${platforms.jd}, pdd=${platforms.pdd}, douyin=${platforms.douyin}, suning=${platforms.suning}`);
 
     // ── Tmall collection (skip if cached today) ──
     if (platforms.tmall && !tmSnapshot) {
@@ -783,12 +798,33 @@ async function runCollection(tenantId, brand) {
       }
     }
 
+    // ── Suning collection (skip if cached today) ──
+    if (platforms.suning && !snSnapshot) {
+      try {
+        console.log(`[collect] 苏宁采集开始: ${brand}`);
+        snSnapshot = await collectSuningSnapshot(page, brand);
+        console.log(`[collect] 苏宁完成: ${snSnapshot.productCount} 个商品`);
+
+        if (snSnapshot.productCount > 0) {
+          saveSuningSnapshot(DATA_DIR, tenantId, brand, snSnapshot);
+          const prevSn = loadSuningSnapshot(DATA_DIR, tenantId, brand, yStr);
+          const snComp = compareSuningSnapshots(snSnapshot, prevSn || null);
+          allSignals.push(...snComp.signals.map(s => ({ ...s, source: "suning" })));
+        } else {
+          errors.push("苏宁: 未采集到商品数据（可能触发反爬或页面结构变化）");
+        }
+      } catch (e) {
+        errors.push(`苏宁采集失败: ${e.message}`);
+        console.error(`[suning] ${brand}: ${e.message}`);
+      }
+    }
+
     // No data at all
-    if (!tmSnapshot && !jdSnapshot && !pddSnapshot && !dySnapshot) {
+    if (!tmSnapshot && !jdSnapshot && !pddSnapshot && !dySnapshot && !snSnapshot) {
       throw new Error("所有数据源采集失败");
     }
 
-    const totalProducts = (tmSnapshot?.productCount || 0) + (jdSnapshot?.productCount || 0) + (pddSnapshot?.productCount || 0) + (dySnapshot?.productCount || 0);
+    const totalProducts = (tmSnapshot?.productCount || 0) + (jdSnapshot?.productCount || 0) + (pddSnapshot?.productCount || 0) + (dySnapshot?.productCount || 0) + (snSnapshot?.productCount || 0);
     if (totalProducts === 0) {
       throw new Error(errors.join("; ") || "所有数据源均未返回商品数据");
     }
@@ -805,11 +841,12 @@ async function runCollection(tenantId, brand) {
 
     // Day-1: generate instant analysis for immediate value
     let instantResult = null;
-    if (isFirstCollection && (tmSnapshot?.productCount > 0 || pddSnapshot?.productCount > 0 || dySnapshot?.productCount > 0)) {
+    if (isFirstCollection && (tmSnapshot?.productCount > 0 || pddSnapshot?.productCount > 0 || dySnapshot?.productCount > 0 || snSnapshot?.productCount > 0)) {
       instantResult = instantAnalyze(brand,
         tmSnapshot?.products || [],
         pddSnapshot?.products || [],
-        dySnapshot?.products || []
+        dySnapshot?.products || [],
+        snSnapshot?.products || []
       );
     }
 
@@ -831,11 +868,12 @@ async function runCollection(tenantId, brand) {
     if (jdSnapshot && jdSnapshot.productCount > 0) brief.sources.push("jd");
     if (pddSnapshot && pddSnapshot.productCount > 0) brief.sources.push("pdd");
     if (dySnapshot && dySnapshot.productCount > 0) brief.sources.push("douyin");
+    if (snSnapshot && snSnapshot.productCount > 0) brief.sources.push("suning");
     if (errors.length > 0) brief.warnings = errors;
     saveReport(DATA_DIR, tenantId, brand, brief);
 
     releasePage(tenantId, page);
-    return { tmSnapshot, jdSnapshot, pddSnapshot, douyinSnapshot: dySnapshot, signals: allSignals, brief, warnings: errors.length > 0 ? errors : undefined };
+    return { tmSnapshot, jdSnapshot, pddSnapshot, douyinSnapshot: dySnapshot, suningSnapshot: snSnapshot, signals: allSignals, brief, warnings: errors.length > 0 ? errors : undefined };
   } catch (e) {
     if (page) releasePage(tenantId, page);
     throw e;

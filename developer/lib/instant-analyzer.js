@@ -149,7 +149,7 @@ function instantRiskScore(tmProducts, pddProducts) {
 
 // ── 综合即时报告 ───────────────────────────────────────────────────
 
-function instantAnalyze(brand, tmProducts, pddProducts, dyProducts) {
+function instantAnalyze(brand, tmProducts, pddProducts, dyProducts, snProducts) {
   const sections = [];
 
   // Price structure
@@ -183,6 +183,16 @@ function instantAnalyze(brand, tmProducts, pddProducts, dyProducts) {
     });
   }
 
+  const snTiers = priceTiers(snProducts);
+  if (snTiers) {
+    sections.push({
+      title: "苏宁易购价格结构",
+      body: `最低 ¥${snTiers.min} / 中位 ¥${snTiers.median} / 最高 ¥${snTiers.max}\n`
+          + `价格分层: 入门档 ${snTiers.tierPct.entry}% | 中端 ${snTiers.tierPct.mid}% | 高端 ${snTiers.tierPct.premium}% | 奢侈 ${snTiers.tierPct.luxury}%\n`
+          + `样本量: ${snTiers.count} 件`,
+    });
+  }
+
   // Cross-platform gap
   const gap = crossPlatformGap(tmProducts, pddProducts);
   if (gap) {
@@ -195,7 +205,7 @@ function instantAnalyze(brand, tmProducts, pddProducts, dyProducts) {
   }
 
   // Store structure
-  const allProducts = [...(tmProducts || []), ...(pddProducts || []), ...(dyProducts || [])];
+  const allProducts = [...(tmProducts || []), ...(pddProducts || []), ...(dyProducts || []), ...(snProducts || [])];
   const struct = storeStructure(allProducts);
   if (struct) {
     sections.push({
@@ -207,7 +217,7 @@ function instantAnalyze(brand, tmProducts, pddProducts, dyProducts) {
   }
 
   // Concentration (use primary source: TMall > PDD > Douyin)
-  const conc = concentration(tmProducts) || concentration(pddProducts) || concentration(dyProducts);
+  const conc = concentration(tmProducts) || concentration(pddProducts) || concentration(dyProducts) || concentration(snProducts);
   if (conc) {
     sections.push({
       title: "头部集中度",
@@ -232,7 +242,7 @@ function instantAnalyze(brand, tmProducts, pddProducts, dyProducts) {
     isInstant: true,
     strategy: { type: strategy, label: CHANNEL_LABELS[strategy] || strategy },
     risk,
-    priceTiers: { tm: tmTiers, pdd: pddTiers, dy: dyTiers },
+    priceTiers: { tm: tmTiers, pdd: pddTiers, dy: dyTiers, sn: snTiers },
     crossPlatformGap: gap,
     storeStructure: struct,
     concentration: conc,

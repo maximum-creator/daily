@@ -78,7 +78,7 @@ async function injectCookies(tenantId, context) {
   const existing = await context.cookies();
   const existingNames = new Set(existing.map(c => `${c.name}@${c.domain}`));
 
-  for (const platform of ["tmall", "jd", "pdd", "douyin"]) {
+  for (const platform of ["tmall", "jd", "pdd", "douyin", "suning"]) {
     const cookies = loadCookies(tenantId, platform);
     if (cookies.length > 0) {
       // Only inject cookies that don't already exist in context
@@ -272,6 +272,7 @@ function getPlatformStatus(tenantId) {
     jd: hasProfile(tenantId, "jd"),
     pdd: hasProfile(tenantId, "pdd") || (hasDir && hasSavedCookies(tenantId, "pdd")),
     douyin: hasProfile(tenantId, "douyin") || (hasDir && hasSavedCookies(tenantId, "douyin")),
+    suning: true, // Suning works headless without login — always available
   };
 }
 
