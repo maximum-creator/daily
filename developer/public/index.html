@@ -88,6 +88,12 @@ input,button{font-family:inherit}
       <button class="btn btn-outline btn-sm" id="loginJdBtn" onclick="doLogin('jd')">登录京东</button>
       <span style="font-size:12px;color:#999" id="jdHint">需要扫码登录京东</span>
     </div>
+    <div class="platform-row" style="margin-top:8px">
+      <span>拼多多：</span>
+      <span class="platform-badge platform-pending" id="pddBadge">未登录</span>
+      <button class="btn btn-outline btn-sm" id="loginPddBtn" onclick="doLogin('pdd')">登录拼多多</button>
+      <span style="font-size:12px;color:#999" id="pddHint">搜索通常无需登录</span>
+    </div>
     <div class="status" id="loginMsg">登录后即可采集对应平台的商品数据</div>
   </div>
 
@@ -159,6 +165,7 @@ let currentBrand = "";
 let monitoredBrands = [];
 let tmallReady = false;
 let jdReady = false;
+let pddReady = false;
 let compareList = [];
 
 // ── Init ──────────────────────────────────────────────────────
@@ -181,6 +188,7 @@ async function checkLogin() {
     if (tid && res.tenants[tid]) {
       tmallReady = !!res.tenants[tid].tmallReady;
       jdReady = !!res.tenants[tid].jdReady;
+      pddReady = !!res.tenants[tid].pddReady;
       updateLoginUI();
     }
   } catch(e) {}
@@ -190,10 +198,13 @@ function updateLoginUI() {
   const card = document.getElementById("loginCard");
   const tmallBadge = document.getElementById("tmallBadge");
   const jdBadge = document.getElementById("jdBadge");
+  const pddBadge = document.getElementById("pddBadge");
   const tmallBtn = document.getElementById("loginTmallBtn");
   const jdBtn = document.getElementById("loginJdBtn");
+  const pddBtn = document.getElementById("loginPddBtn");
   const tmallHint = document.getElementById("tmallHint");
   const jdHint = document.getElementById("jdHint");
+  const pddHint = document.getElementById("pddHint");
 
   if (tmallReady) {
     card.style.borderLeftColor = "#27ae60";
@@ -221,18 +232,30 @@ function updateLoginUI() {
     jdHint.textContent = "需要扫码登录京东";
   }
 
+  if (pddReady) {
+    pddBadge.textContent = "已登录";
+    pddBadge.className = "platform-badge platform-ready";
+    pddBtn.textContent = "重新登录";
+    pddHint.textContent = "✓ 就绪";
+  } else {
+    pddBadge.textContent = "未登录";
+    pddBadge.className = "platform-badge platform-pending";
+    pddBtn.textContent = "登录拼多多";
+    pddHint.textContent = "搜索通常无需登录";
+  }
+
+  const readyCount = (tmallReady ? 1 : 0) + (jdReady ? 1 : 0) + (pddReady ? 1 : 0);
   document.getElementById("loginMsg").textContent =
-    (!tmallReady && !jdReady) ? "请登录至少一个数据源后开始监测" :
-    (tmallReady && jdReady) ? "双数据源就绪，可同时采集天猫+京东数据" :
-    tmallReady ? "天猫已就绪，建议同时登录京东获取更全面数据" :
-    "京东已就绪，建议同时登录天猫获取更全面数据";
+    readyCount === 0 ? "请登录至少一个数据源后开始监测" :
+    readyCount === 3 ? "三数据源就绪，可同时采集天猫+京东+拼多多" :
+    `已就绪 ${readyCount}/3 数据源，可开始监测`;
 }
 
 // ── Login ─────────────────────────────────────────────────────
 
 async function doLogin(platform) {
-  const label = platform === "jd" ? "京东" : "天猫";
-  const btnId = platform === "jd" ? "loginJdBtn" : "loginTmallBtn";
+  const label = { jd: "京东", pdd: "拼多多", tmall: "天猫" }[platform] || "天猫";
+  const btnId = { jd: "loginJdBtn", pdd: "loginPddBtn", tmall: "loginTmallBtn" }[platform] || "loginTmallBtn";
   const btn = document.getElementById(btnId);
   const msg = document.getElementById("loginMsg");
 
@@ -245,7 +268,7 @@ async function doLogin(platform) {
     if (res.code === 0) {
       msg.textContent = res.message;
       if (res.profileReady) {
-        if (platform === "jd") jdReady = true; else tmallReady = true;
+        if (platform === "jd") jdReady = true; else if (platform === "pdd") pddReady = true; else tmallReady = true;
         updateLoginUI();
         btn.disabled = false;
       } else if (res.launching) {
@@ -255,7 +278,7 @@ async function doLogin(platform) {
             const r2 = await api("POST", "/login", { platform });
             if (r2.profileReady) {
               clearInterval(poll);
-              if (platform === "jd") jdReady = true; else tmallReady = true;
+              if (platform === "jd") jdReady = true; else if (platform === "pdd") pddReady = true; else tmallReady = true;
               updateLoginUI();
               btn.disabled = false;
             }
@@ -288,7 +311,7 @@ async function doSearch() {
     return;
   }
 
-  if (!tmallReady && !jdReady) {
+  if (!tmallReady && !jdReady && !pddReady) {
     document.getElementById("searchStatus").innerHTML = '<span class="status error">请先登录至少一个数据源</span>';
     return;
   }
@@ -301,13 +324,14 @@ async function doSearch() {
   const sources = [];
   if (tmallReady) sources.push("天猫");
   if (jdReady) sources.push("京东");
+  if (pddReady) sources.push("拼多多");
   status.innerHTML = `<span class="status">正在采集${sources.join("+")}数据，请稍候…</span>`;
 
   try {
     const res = await api("POST", "/search", { brand });
     if (res.code === 0) {
       const brief = res.data.brief;
-      const srcLabel = (brief.sources || []).map(s => s === "tmall" ? "天猫" : "京东").join("+") || "无数据";
+      const srcLabel = (brief.sources || []).map(s => ({ tmall: "天猫", jd: "京东", pdd: "拼多多" }[s] || s)).join("+") || "无数据";
       const hasWarnings = brief.warnings && brief.warnings.length > 0;
       status.innerHTML = `<span class="status success">采集完成 (${srcLabel}) ✓</span>`;
       if (hasWarnings) {
@@ -438,7 +462,10 @@ async function doCompare() {
                 <span style="color:${d.highCount > 0 ? '#e74c3c' : '#999'}">${d.highCount}</span>
               </td>
               <td style="padding:8px;text-align:center;font-size:11px">
-                ${(d.sources || []).map(s => `<span style="padding:1px 5px;border-radius:3px;background:${s === 'tmall' ? '#ffebee' : '#e3f2fd'};color:${s === 'tmall' ? '#c62828' : '#1565c0'};margin:0 1px">${s === 'tmall' ? '猫' : '京'}</span>`).join("") || "N/A"}
+                ${(d.sources || []).map(s => {
+                  const cfg = { tmall: { bg: '#ffebee', fg: '#c62828', label: '猫' }, jd: { bg: '#e3f2fd', fg: '#1565c0', label: '京' }, pdd: { bg: '#fce4ec', fg: '#c62828', label: '多' } }[s] || { bg: '#eee', fg: '#666', label: s };
+                  return `<span style="padding:1px 5px;border-radius:3px;background:${cfg.bg};color:${cfg.fg};margin:0 1px">${cfg.label}</span>`;
+                }).join("") || "N/A"}
               </td>
               <td style="padding:8px;text-align:right;font-size:12px">
                 ${d.priceRange ? `¥${d.priceRange.min} ~ ¥${d.priceRange.max}` : "N/A"}
@@ -479,7 +506,10 @@ function showReport(brief) {
 
   const sources = brief.sources || [];
   const srcBadges = sources.length > 0
-    ? sources.map(s => `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:6px;background:${s === 'tmall' ? '#ffebee' : '#e3f2fd'};color:${s === 'tmall' ? '#c62828' : '#1565c0'}">${s === 'tmall' ? '天猫' : '京东'}</span>`).join("")
+    ? sources.map(s => {
+        const cfg = { tmall: { bg: '#ffebee', fg: '#c62828', label: '天猫' }, jd: { bg: '#e3f2fd', fg: '#1565c0', label: '京东' }, pdd: { bg: '#fce4ec', fg: '#c62828', label: '拼多多' } }[s] || { bg: '#eee', fg: '#666', label: s };
+        return `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;margin-left:6px;background:${cfg.bg};color:${cfg.fg}">${cfg.label}</span>`;
+      }).join("")
     : "";
 
   const dateNav = currentReportDate
