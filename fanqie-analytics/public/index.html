@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>番茄智能分析平台 · AuthorIQ</title>
+<link rel="stylesheet" href="/css/app.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+<div class="app-shell">
+
+<!-- ═══ SIDEBAR ═══ -->
+<nav class="sidebar">
+  <div class="logo">AuthorIQ</div>
+  <button class="nav-item active" data-page="collect">&#9670; 数据采集</button>
+  <button class="nav-item" data-page="dashboard">&#9632; 分析仪表盘</button>
+  <button class="nav-item" data-page="force">&#9733; 算法信号</button>
+  <button class="nav-item" data-page="admin">&#9881; 管理</button>
+  <div class="version">v2.0 · 番茄作者数据引擎</div>
+</nav>
+
+<!-- ═══ MAIN CONTENT ═══ -->
+<main class="main-content" id="mainContent">
+
+<!-- ── Collect Page ── -->
+<section id="page-collect" class="page active">
+  <div class="top-bar">
+    <div>
+      <h1 class="page-title">数据采集</h1>
+      <p class="text-muted text-sm" style="margin-top:4px">从番茄作家后台采集最新数据</p>
+    </div>
+    <div class="status">
+      <span id="wsDot" class="dot offline"></span>
+      <span id="wsStatus">未连接</span>
+    </div>
+  </div>
+
+  <div class="card mb-md">
+    <div class="card-header"><h2>选择作品</h2></div>
+    <div id="bookSelector" class="book-grid">
+      <p class="text-muted">请先输入 API Key 连接服务…</p>
+    </div>
+    <div class="flex gap-sm mt-sm">
+      <button id="btnRefreshBooks" class="btn btn-secondary btn-sm">刷新列表</button>
+      <button id="btnSelectAll" class="btn btn-secondary btn-sm">全选</button>
+      <button id="btnDeselectAll" class="btn btn-secondary btn-sm">取消全选</button>
+    </div>
+  </div>
+
+  <div class="flex gap-sm mb-md">
+    <button id="btnCollect" class="btn btn-primary">&#9654; 开始采集</button>
+    <button id="btnQuickAnalyze" class="btn btn-secondary" disabled>&#9733; 采集+分析</button>
+  </div>
+
+  <!-- History -->
+  <div class="card" id="collectionHistory" style="display:none">
+    <div class="card-header"><h2>最近采集</h2></div>
+    <div id="historyList"></div>
+  </div>
+
+  <!-- Empty state -->
+  <div id="emptyState" class="empty-state">
+    <span class="empty-icon">&#128202;</span>
+    <h2>开始采集你的番茄数据</h2>
+    <p>点击上方按钮，自动从作家后台拉取最新数据</p>
+  </div>
+</section>
+
+<!-- ── Dashboard Page ── -->
+<section id="page-dashboard" class="page hidden">
+  <div class="top-bar">
+    <div>
+      <h1 class="page-title">分析仪表盘</h1>
+      <p class="text-muted text-sm" id="dashBookInfo" style="margin-top:4px"></p>
+    </div>
+    <button id="btnRefreshAnalysis" class="btn btn-secondary btn-sm">刷新分析</button>
+  </div>
+
+  <div id="stageBanner"></div>
+
+  <!-- KPI Cards -->
+  <div class="kpi-grid" id="kpiGrid"></div>
+
+  <!-- Trends + Funnel -->
+  <div class="grid-2 mb-md">
+    <div class="card"><div class="card-header"><h2>趋势图</h2></div><div class="chart-container"><canvas id="trendChart"></canvas></div></div>
+    <div class="card"><div class="card-header"><h2>完成率曲线</h2></div><div class="chart-container"><canvas id="completionChart"></canvas></div></div>
+  </div>
+
+  <div class="grid-2 mb-md">
+    <div class="card"><div class="card-header"><h2>流量来源</h2></div><div class="chart-container"><canvas id="trafficChart"></canvas></div></div>
+    <div class="card"><div class="card-header"><h2>互动漏斗</h2></div><div class="chart-container"><canvas id="funnelChart" height="200"></canvas></div></div>
+  </div>
+
+  <!-- Anomalies -->
+  <div class="card mb-md" id="anomalyCard" style="display:none">
+    <div class="card-header"><h2>异常检测</h2><span class="text-muted" style="font-size:12px">z-score &gt; 2 标准差</span></div>
+    <div id="anomalyList"></div>
+  </div>
+
+  <!-- AI Analysis -->
+  <div class="ai-panel hidden" id="aiPanel">
+    <div class="ai-header">
+      <span class="ai-badge">AI 分析</span>
+      <span style="font-size:13px;color:var(--text-secondary)">基于 Qwen 大模型</span>
+    </div>
+    <div class="ai-content" id="aiContent"></div>
+  </div>
+
+  <!-- Suggestions -->
+  <div class="card mt-md" id="suggestionCard" style="display:none">
+    <div class="card-header"><h2>智能建议</h2></div>
+    <div id="suggestionList"></div>
+  </div>
+</section>
+
+<!-- ── Force Index Page ── -->
+<section id="page-force" class="page hidden">
+  <div class="top-bar">
+    <div>
+      <h1 class="page-title">算法信号模拟器</h1>
+      <p class="text-muted text-sm" style="margin-top:4px">基于已知规则模拟番茄推荐算法的评分</p>
+    </div>
+  </div>
+
+  <div class="force-gauge" id="forceGauge">
+    <div class="gauge-ring score-medium" id="forceScore">--</div>
+    <div class="gauge-detail" id="forceBreakdown"></div>
+  </div>
+
+  <div class="card mt-md">
+    <div class="card-header"><h2>预测</h2></div>
+    <p id="forcePrediction" style="font-size:15px;line-height:1.6"></p>
+  </div>
+
+  <div class="card mt-md">
+    <div class="card-header"><h2>当前阶段基准</h2></div>
+    <div id="stageBenchmarks"></div>
+  </div>
+</section>
+
+<!-- ── Admin Page ── -->
+<section id="page-admin" class="page hidden">
+  <div class="top-bar">
+    <div>
+      <h1 class="page-title">管理</h1>
+      <p class="text-muted text-sm" style="margin-top:4px">用量统计 & 审计日志</p>
+    </div>
+  </div>
+  <div class="card mb-md">
+    <div class="card-header"><h2>API 用量</h2></div>
+    <div id="usageStats"><p class="text-muted">加载中…</p></div>
+  </div>
+  <div class="card">
+    <div class="card-header"><h2>操作日志</h2></div>
+    <div id="auditLog"><p class="text-muted">加载中…</p></div>
+  </div>
+</section>
+
+</main>
+</div>
+
+<!-- ═══ PROGRESS OVERLAY ═══ -->
+<div class="progress-overlay" id="progressOverlay">
+  <div class="prog-title">正在采集数据</div>
+  <div class="mono prog-timer" id="progTimer">00:00</div>
+  <div class="prog-steps" id="progSteps"></div>
+  <div class="prog-bar-wrap">
+    <div class="prog-bar"><div class="fill" id="progFill"></div></div>
+    <span class="prog-pct" id="progPct">0%</span>
+  </div>
+  <p style="color:var(--text-muted);font-size:13px;margin-top:16px" id="progMessage"></p>
+</div>
+
+<!-- ═══ API KEY MODAL ═══ -->
+<div id="apiKeyModal" style="display:flex;position:fixed;inset:0;background:rgba(15,17,23,0.95);z-index:200;align-items:center;justify-content:center;flex-direction:column">
+  <div style="text-align:center;max-width:420px">
+    <h1 style="margin-bottom:8px">&#128274; 输入 API Key</h1>
+    <p style="color:var(--text-secondary);margin-bottom:20px;font-size:14px">连接你的番茄分析服务</p>
+    <input type="password" id="apiKeyInput" placeholder="粘贴 API Key…" style="width:100%;margin-bottom:12px;font-size:15px;padding:12px 16px">
+    <button class="btn btn-primary" id="btnSaveKey" style="width:100%;justify-content:center">连接</button>
+    <p style="color:var(--text-muted);font-size:11px;margin-top:10px" id="keyError"></p>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script src="/js/ws-client.js"></script>
+<script src="/js/charts.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>

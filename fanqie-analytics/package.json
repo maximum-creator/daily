@@ -1,27 +1,29 @@
 {
   "name": "fanqie-analytics",
-  "version": "1.0.0",
-  "description": "番茄小说作家后台数据自动采集分析工具",
-  "main": "fanqie-analytics.js",
+  "version": "2.0.0",
+  "description": "番茄小说智能分析平台 — AI驱动的作家数据诊断引擎",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js",
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "old-server": "node server.js",
     "collect": "node fanqie-analytics.js collect",
     "report": "node fanqie-analytics.js report",
-    "setup": "node fanqie-analytics.js setup",
-    "predict": "node fanqie-analytics.js predict",
-    "chapters": "node fanqie-analytics.js chapters",
-    "metrics": "node fanqie-analytics.js metrics",
-    "weekly": "node fanqie-analytics.js weekly",
-    "monthly": "node fanqie-analytics.js monthly",
-    "html": "node fanqie-analytics.js html",
+    "migrate": "node scripts/migrate-data.js",
     "login": "node scripts/quick-login.js",
     "headless-test": "node scripts/headless-test.js"
   },
   "dependencies": {
+    "sql.js": "^1.12.0",
+    "chart.js": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "morgan": "^1.10.1",
-    "playwright": "^1.52.0"
+    "node-cron": "^3.0.3",
+    "pino": "^9.5.0",
+    "pino-pretty": "^11.3.0",
+    "playwright": "^1.52.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.0"
   }
 }
