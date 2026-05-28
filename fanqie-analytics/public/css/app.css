@@ -126,12 +126,9 @@ select { width: 100%; }
   padding: 16px 22px; border-radius: var(--radius); margin-bottom: 20px;
   display: flex; align-items: center; gap: 14px; font-size: 14px;
 }
-.stage-verification { background: rgba(243,156,18,0.1); border-left: 4px solid var(--warning); color: var(--warning); }
 .stage-signed { background: rgba(39,174,96,0.1); border-left: 4px solid var(--success); color: var(--success); }
-.stage-recommendation { background: rgba(52,152,219,0.1); border-left: 4px solid var(--info); color: var(--info); }
 .stage-finished { background: rgba(155,89,182,0.1); border-left: 4px solid #9b59b6; color: #9b59b6; }
 .stage-unsigned { background: rgba(149,165,166,0.1); border-left: 4px solid #95a5a6; color: #95a5a6; }
-.stage-ongoing { background: rgba(102,126,234,0.1); border-left: 4px solid var(--accent); color: var(--accent-light); }
 .stage-banner .st-icon { font-size: 28px; flex-shrink: 0; }
 
 /* ── Force Index Gauge ── */

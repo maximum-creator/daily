@@ -34,11 +34,10 @@ function analyzeTenantData(collectionData, historicalMetrics) {
   const searchTraffic = trafficSources["搜索"] || 0;
   const searchRatio = totalTraffic > 0 ? searchTraffic / totalTraffic : 0;
 
-  // ── Lifecycle Detection ──
-  const isSigned = status.includes("已签约");
+  // ── Lifecycle Detection (简化: 只分签约/未签约) ──
+  // 已完结、已签约、验证中、推荐中 → 都算已签约
+  const isSigned = /已签约|已完结|验证中|审核中|推荐中/.test(status);
   const isFinished = status.includes("已完结");
-  const isRecommendation = status.includes("推荐中");
-  const explicitVerification = status.includes("验证中") || status.includes("审核中");
 
   let daysSinceFirstPublish = 999;
   if (chapterList.length > 0) {
@@ -53,10 +52,9 @@ function analyzeTenantData(collectionData, historicalMetrics) {
     daysSinceFirstPublish = Math.min(daysSinceFirstPublish, dwDays);
   }
 
+  // Simplified: finished > signed > unsigned
   const stage = isFinished ? "finished"
     : isSigned ? "signed"
-    : isRecommendation ? "recommendation"
-    : (explicitVerification || (daysSinceFirstPublish <= 10 && !isSigned)) ? "verification"
     : "unsigned";
 
   // ── Completion / Follow rates ──
@@ -216,21 +214,18 @@ function computeForceIndex({ avgCompletion, avgFollow, bookmarkCount, readerCoun
 function getStageBenchmarks(stage) {
   const map = {
     unsigned: { completion: 20, follow: 25, searchRatioMax: 85, bookmarkRate: 5 },
-    verification: { completion: 30, follow: 35, searchRatioMax: 55, bookmarkRate: 8 },
-    recommendation: { completion: 32, follow: 38, searchRatioMax: 40, bookmarkRate: 9 },
     signed: { completion: 35, follow: 40, searchRatioMax: 30, bookmarkRate: 10 },
-    ongoing: { completion: 25, follow: 30, searchRatioMax: 25, bookmarkRate: 8 },
     finished: { completion: 15, follow: 20, searchRatioMax: 50, bookmarkRate: 5 },
   };
-  return map[stage] || map.ongoing;
+  return map[stage] || map.signed;
 }
 
 function generateSuggestions(ctx) {
   const suggestions = [];
   const { stage, avgCompletion, avgFollow, earlyRate, lateRate, searchRatio, bookmarkCount, readerCount, avgDailyWords, biggestDrop, anomalies, forceIndex, daysSinceFirstPublish } = ctx;
 
-  // ═══ 验证期 ═══
-  if (stage === "verification") {
+  // ═══ 已签约 (含验证期/推荐期) ═══
+  if (stage === "signed") {
     if (searchRatio > 0.6) {
       suggestions.push({
         priority: "high", category: "traffic",

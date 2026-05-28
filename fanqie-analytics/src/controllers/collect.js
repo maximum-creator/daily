@@ -1,5 +1,5 @@
 const { Router } = require("express");
-const { startCollection, getProgress } = require("../services/collector.service");
+const { startCollection, getProgress, collecting, collectProgress } = require("../services/collector.service");
 const { getTodayCollectionCount } = require("../repos/usage.repo");
 const { hasProfile, getPage, releasePage } = require("../collectors/browser-manager");
 const { collectDashboard } = require("../collectors/dashboard");
@@ -75,7 +75,18 @@ router.post("/collect", async (req, res) => {
 router.get("/collect/progress", (req, res) => {
   const tenantId = req.tenant.id;
   const progress = getProgress(tenantId);
-  if (!progress) return res.json({ code: 0, data: { phase: "idle" } });
+
+  // Stale or done progress → return idle
+  if (!progress || progress.done) {
+    if (progress?.done) {
+      // Clean up stale done progress after 5 min
+      if (Date.now() - progress.startTime > 300000) {
+        collecting.delete(tenantId);
+        collectProgress.delete(tenantId);
+      }
+    }
+    return res.json({ code: 0, data: { phase: "idle" } });
+  }
 
   const elapsed = progress.startTime ? Math.round((Date.now() - progress.startTime) / 1000) : 0;
   res.json({ code: 0, data: { ...progress, elapsed } });

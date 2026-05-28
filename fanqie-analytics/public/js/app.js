@@ -60,8 +60,12 @@ $$(".nav-item").forEach((btn) => {
 });
 
 // ── Init ──
+let initialized = false;
+
 async function init() {
   if (!checkApiKey()) return;
+  if (initialized) { await loadBooks(); return; }
+  initialized = true;
 
   // Connect WebSocket
   WSClient.connect("demo");
@@ -82,25 +86,29 @@ async function init() {
 
 // ── Book Loading ──
 async function loadBooks() {
+  allBooks = [];
+
+  // Try scanning books from browser first
   try {
-    // Try scanning books
     const scanRes = await API.scanBooks();
-    if (scanRes.data?.novels) {
+    if (scanRes.data?.novels?.length > 0) {
       allBooks = scanRes.data.novels;
-      renderBookSelector();
     }
-  } catch (e) {
-    // Fallback: try GET /books
+  } catch (e) { /* fall through to fallback */ }
+
+  // Fallback: load from SQLite if scan returned nothing
+  if (allBooks.length === 0) {
     try {
       const booksRes = await API.getBooks();
-      if (booksRes.data) {
+      if (booksRes.data?.length > 0) {
         allBooks = booksRes.data.map((b) => ({ name: b.name, status: "" }));
-        renderBookSelector();
       }
     } catch (e2) {
       console.warn("无法获取作品列表:", e2.message);
     }
   }
+
+  renderBookSelector();
 }
 
 function renderBookSelector() {
@@ -157,27 +165,29 @@ $("#btnRefreshBooks").addEventListener("click", loadBooks);
 // ── Collection ──
 $("#btnCollect").addEventListener("click", startCollection);
 $("#btnQuickAnalyze").addEventListener("click", async () => {
-  await startCollection();
-  navigateTo("dashboard");
-  await loadDashboard();
+  const started = await startCollection();
+  if (!started) return;
+  // Note: pollProgress will auto-navigate on completion
 });
 
 async function startCollection() {
   if (selectedBooks.length === 0) {
     alert("请先选择作品");
-    return;
+    return false;
   }
 
   try {
     const res = await API.collect(selectedBooks.join(","));
     if (res.code !== 0) {
       alert(res.message);
-      return;
+      return false;
     }
     showProgressOverlay();
     pollProgress();
+    return true;
   } catch (e) {
     alert("启动采集失败: " + e.message);
+    return false;
   }
 }
 
@@ -185,14 +195,17 @@ async function startCollection() {
 let progressTimer = null;
 let progressStartTime = 0;
 let progressPollTimer = null;
+let progressCancelled = false;
 
 $("#btnCloseProgress").addEventListener("click", () => {
+  progressCancelled = true;
   if (progressTimer) clearInterval(progressTimer);
   if (progressPollTimer) clearTimeout(progressPollTimer);
   $("#progressOverlay").classList.remove("active");
 });
 
 function showProgressOverlay() {
+  progressCancelled = false;
   $("#progressOverlay").classList.add("active");
   progressStartTime = Date.now();
   $("#progSteps").innerHTML = `
@@ -263,7 +276,7 @@ async function pollProgress() {
         $("#progressOverlay").classList.remove("active");
         if (data.error) {
           alert("采集出错: " + data.message);
-        } else {
+        } else if (!progressCancelled) {
           navigateTo("dashboard");
           loadDashboard();
         }
@@ -367,11 +380,26 @@ function renderDashboard(data) {
   const a = data.analysis;
   if (!a) return;
 
-  $("#dashBookInfo").textContent = `${a.book} · ${data.date} · ${data.collectedAt ? new Date(data.collectedAt).toLocaleTimeString() : ""}`;
+  const dataDate = data.date;
+  const today = new Date().toISOString().slice(0, 10);
+  const daysOld = dataDate ? Math.round((new Date(today) - new Date(dataDate)) / 86400000) : 999;
+
+  $("#dashBookInfo").innerHTML = `${a.book} · <strong>${dataDate}</strong> · ${data.collectedAt ? new Date(data.collectedAt).toLocaleTimeString() : ""}`;
+
+  // Data freshness warning
+  if (daysOld > 1) {
+    $("#stageBanner").insertAdjacentHTML("beforebegin",
+      `<div style="background:rgba(231,76,60,0.1);border-left:4px solid var(--danger);padding:12px 18px;border-radius:var(--radius);margin-bottom:14px;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--danger)"><span style="font-size:18px">&#9888;</span> 数据已过 <strong>${daysOld} 天</strong>，建议重新采集以获取最新数据</div>`
+    );
+  } else if (daysOld === 1) {
+    $("#stageBanner").insertAdjacentHTML("beforebegin",
+      `<div style="background:rgba(243,156,18,0.1);border-left:4px solid var(--warning);padding:12px 18px;border-radius:var(--radius);margin-bottom:14px;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--warning)"><span style="font-size:18px">&#9888;</span> 数据来自昨天，可重新采集获取今日最新数据</div>`
+    );
+  }
 
   // Stage banner
-  const stageLabels = { verification: "验证期", signed: "签约期", recommendation: "推荐期", finished: "已完结", unsigned: "未签约", ongoing: "连载中" };
-  const stageIcons = { verification: "🔍", signed: "📝", recommendation: "🚀", finished: "📚", unsigned: "🌱" };
+  const stageLabels = { signed: "已签约", finished: "已完结", unsigned: "未签约" };
+  const stageIcons = { signed: "📝", finished: "📚", unsigned: "🌱" };
   const stage = a.stage || "unsigned";
   $("#stageBanner").innerHTML = `
     <div class="stage-banner stage-${stage}">

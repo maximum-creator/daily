@@ -43,7 +43,9 @@ async function collectDashboard(page) {
           const name = nameEl?.textContent?.trim() || "";
           const full = item.textContent?.trim() || "";
           const afterName = full.slice(full.indexOf(name) + name.length).trim();
-          const status = afterName.match(/推荐中|验证中|审核中|连载中|已签约|已完结|已下架/)?.[0] || "";
+          // Capture ALL status keywords (global match), join with separator
+          const statusMatches = afterName.match(/推荐中|验证中|审核中|连载中|已签约|已完结|已下架/g) || [];
+          const status = [...new Set(statusMatches)].join(" · ");  // deduplicate, join
           const ranking = afterName.match(/第\d+名|未上榜|上榜/)?.[0] || "";
           return { name, selected: item.classList.contains("selected"), status, ranking };
         });
