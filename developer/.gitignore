@@ -4,3 +4,5 @@ browser-profiles/
 *.log
 .DS_Store
 Thumbs.db
+config/ai.json
+config/api-keys.json
