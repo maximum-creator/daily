@@ -748,8 +748,7 @@ async function runCollection(tenantId, brand) {
   const errors = [];
 
   try {
-    page = await getPage(tenantId);
-    console.log(`[collect] 页面已获取`);
+    page = await getPage(tenantId, { headless: true });
     console.log(`[collect] 平台状态: tmall=${platforms.tmall}, jd=${platforms.jd}, pdd=${platforms.pdd}, douyin=${platforms.douyin}, suning=${platforms.suning}, dangdang=${platforms.dangdang}`);
 
     // ── Tmall collection (skip if cached today) ──
