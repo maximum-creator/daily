@@ -1,21 +1,21 @@
-// Qwen AI 竞品分析层
-// 调用 Qwen API 对采集数据进行深度解读：策略建议、异常分析、竞品动向
-// 配置: config/qwen.json 或环境变量 QWEN_API_KEY
+// AI 竞品分析层 — DeepSeek 驱动（兼容 OpenAI 格式的模型均可替换）
+// 配置: config/ai.json 或环境变量 AI_API_KEY / AI_MODEL / AI_ENDPOINT
+// 支持: DeepSeek (api.deepseek.com) / Qwen (dashscope.aliyuncs.com) / 任意 OpenAI 兼容 API
 
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
 
-const CONFIG_PATH = path.join(__dirname, "..", "config", "qwen.json");
+const CONFIG_PATH = path.join(__dirname, "..", "config", "ai.json");
 
 function loadConfig() {
   if (fs.existsSync(CONFIG_PATH)) {
     try { return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8")); } catch (e) { /* fall through */ }
   }
   return {
-    apiKey: process.env.QWEN_API_KEY || process.env.DASHSCOPE_API_KEY || "",
-    model: process.env.QWEN_MODEL || "qwen-plus",
-    endpoint: process.env.QWEN_ENDPOINT || "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    apiKey: process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || process.env.QWEN_API_KEY || "",
+    model: process.env.AI_MODEL || "deepseek-chat",
+    endpoint: process.env.AI_ENDPOINT || "https://api.deepseek.com/v1/chat/completions",
   };
 }
 
@@ -24,11 +24,11 @@ function isConfigured() {
   return !!cfg.apiKey;
 }
 
-// ── API 调用 ─────────────────────────────────────────────────────
+// ── 通用 OpenAI-compatible 调用 ──────────────────────────────────
 
-async function qwenChat(messages, opts = {}) {
+async function aiChat(messages, opts = {}) {
   const cfg = loadConfig();
-  if (!cfg.apiKey) throw new Error("Qwen API 未配置：设置 QWEN_API_KEY 环境变量或 config/qwen.json");
+  if (!cfg.apiKey) throw new Error("AI API 未配置：设置 AI_API_KEY 环境变量或 config/ai.json");
 
   const model = opts.model || cfg.model;
   const body = JSON.stringify({
@@ -43,7 +43,7 @@ async function qwenChat(messages, opts = {}) {
     const url = new URL(cfg.endpoint);
     const req = https.request({
       hostname: url.hostname,
-      path: url.pathname,
+      path: url.pathname + url.search,
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -58,17 +58,17 @@ async function qwenChat(messages, opts = {}) {
         try {
           const json = JSON.parse(data);
           if (json.error) {
-            reject(new Error(`Qwen API ${json.error.code}: ${json.error.message}`));
+            reject(new Error(`AI API ${json.error.code || json.error.type}: ${json.error.message}`));
           } else {
             resolve(json.choices?.[0]?.message?.content || "");
           }
         } catch (e) {
-          reject(new Error(`Qwen API 响应解析失败: ${data.slice(0, 200)}`));
+          reject(new Error(`AI API 响应解析失败: ${data.slice(0, 200)}`));
         }
       });
     });
     req.on("error", reject);
-    req.on("timeout", () => { req.destroy(); reject(new Error("Qwen API 超时")); });
+    req.on("timeout", () => { req.destroy(); reject(new Error("AI API 超时")); });
     req.write(body);
     req.end();
   });
@@ -119,7 +119,7 @@ ${JSON.stringify(skuSummary, null, 2)}
 请用中文回答，每段以"## "开头。`;
 
   try {
-    const result = await qwenChat([
+    const result = await aiChat([
       { role: "system", content: "你是专业的电商竞品分析顾问，回复简洁、具体、有数据支撑。使用中文。" },
       { role: "user", content: prompt },
     ], { maxTokens: 800, temperature: 0.5 });
@@ -130,7 +130,7 @@ ${JSON.stringify(skuSummary, null, 2)}
       analysis: result,
     };
   } catch (e) {
-    console.error(`[qwen] 策略分析失败: ${e.message}`);
+    console.error(`[ai] 策略分析失败: ${e.message}`);
     return { error: e.message };
   }
 }
@@ -162,7 +162,7 @@ ${signalSummary}
 请简洁回答，每段以"## "开头。`;
 
   try {
-    const result = await qwenChat([
+    const result = await aiChat([
       { role: "system", content: "你是电商竞品监控分析师，擅长从数据信号中发现趋势和风险。使用中文。" },
       { role: "user", content: prompt },
     ], { maxTokens: 500, temperature: 0.3 });
@@ -173,7 +173,7 @@ ${signalSummary}
       interpretation: result,
     };
   } catch (e) {
-    console.error(`[qwen] 异常解读失败: ${e.message}`);
+    console.error(`[ai] 异常解读失败: ${e.message}`);
     return { error: e.message };
   }
 }
@@ -200,14 +200,14 @@ ${JSON.stringify(trends || {}, null, 2)}
 请生成一段面向品牌经理的执行摘要（100字以内），用中文。`;
 
   try {
-    const result = await qwenChat([
+    const result = await aiChat([
       { role: "system", content: "你是品牌竞品监测助手，生成简洁的执行摘要。使用中文。" },
       { role: "user", content: prompt },
     ], { maxTokens: 300, temperature: 0.4 });
 
     return result.trim();
   } catch (e) {
-    console.error(`[qwen] 日报摘要失败: ${e.message}`);
+    console.error(`[ai] 日报摘要失败: ${e.message}`);
     return null;
   }
 }
@@ -215,7 +215,7 @@ ${JSON.stringify(trends || {}, null, 2)}
 module.exports = {
   loadConfig,
   isConfigured,
-  qwenChat,
+  aiChat,
   competitiveStrategyAnalysis,
   anomalyInterpretation,
   dailyExecutiveSummary,
