@@ -62,6 +62,12 @@ function findArrayWith(obj, key) {
 async function searchDouyinProducts(page, brandName, maxPages = 1) {
   const allProducts = [];
 
+  // Switch to mobile viewport for Douyin mall
+  const origViewport = page.viewportSize();
+  try {
+    await page.setViewportSize({ width: 414, height: 896 });
+  } catch (e) { /* may fail */ }
+
   // Intercept XHR responses to capture Douyin's internal search API data
   const apiProducts = [];
   const onResponse = async (response) => {
@@ -81,26 +87,32 @@ async function searchDouyinProducts(page, brandName, maxPages = 1) {
   page.on("response", onResponse);
 
   for (let pg = 1; pg <= maxPages; pg++) {
-    // Try mall.douyin.com first, fall back to douyin.com search
+    // Primary: mall.douyin.com (e-commerce specific)
     let searchUrl = `https://mall.douyin.com/search?keyword=${encodeURIComponent(brandName)}&page=${pg}`;
     let usedFallback = false;
 
-    const tryNavigate = async (url) => {
+    const tryNavigate = async (url, label) => {
       try {
         await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
         return true;
       } catch (e) {
-        console.log(`[douyin] pg${pg} 导航失败 (${url.slice(0,50)}): ${e.message}`);
+        console.log(`[douyin] pg${pg} ${label} 导航失败: ${e.message}`);
         return false;
       }
     };
 
-    if (!(await tryNavigate(searchUrl))) {
+    if (!(await tryNavigate(searchUrl, "mall"))) {
       // Fallback URL per Qwen suggestion
       if (pg === 1) {
+        // Fallback 1: douyin.com general search
         searchUrl = `https://www.douyin.com/search/${encodeURIComponent(brandName)}?aid=6383&type=general`;
         console.log(`[douyin] pg${pg} 尝试备选URL: douyin.com`);
-        if (!(await tryNavigate(searchUrl))) break;
+        if (!(await tryNavigate(searchUrl, "douyin.com"))) {
+          // Fallback 2: mobile goods search
+          searchUrl = `https://www.douyin.com/search/${encodeURIComponent(brandName + " 商品")}?type=goods`;
+          console.log(`[douyin] pg${pg} 尝试备选: douyin goods`);
+          if (!(await tryNavigate(searchUrl, "goods"))) break;
+        }
         usedFallback = true;
       } else {
         break;
@@ -143,6 +155,12 @@ async function searchDouyinProducts(page, brandName, maxPages = 1) {
 
     if (!dataReady) {
       console.log(`[douyin] pg${pg} SPA数据未就绪，额外等待...`);
+      // Check for fake/placeholder shell data (common anti-bot response)
+      const bodyLen = await page.evaluate(() => document.body?.innerText?.length || 0).catch(() => 0);
+      console.log(`[douyin] pg${pg} 页面内容长度: ${bodyLen} 字符`);
+      if (bodyLen < 500) {
+        console.log(`[douyin] pg${pg} ⚠ 检测到疑似占位壳（${bodyLen}字符），数据可能未加载。建议使用headed模式或登录cookie。`);
+      }
     }
     await page.waitForTimeout(2000);
 
@@ -273,6 +291,13 @@ async function searchDouyinProducts(page, brandName, maxPages = 1) {
 
   // Clean up response listener
   page.off("response", onResponse);
+
+  // Restore original viewport
+  if (origViewport) {
+    try {
+      await page.setViewportSize(origViewport);
+    } catch (e) { /* ignore */ }
+  }
 
   // Merge API-captured products (may be richer than inline/DOM)
   if (apiProducts.length > allProducts.length) {

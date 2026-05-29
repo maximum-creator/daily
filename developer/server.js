@@ -21,6 +21,8 @@ const { collectBrandSnapshot: collectDangdangSnapshot, compareSnapshots: compare
 const { aggregateAll, analyzeTrend, detectAnomalies, brandHealthScore, generateSuggestions } = require("./lib/signal-aggregator");
 const { generateDailyBrief, briefToHtml } = require("./lib/report-generator");
 const { instantAnalyze } = require("./lib/instant-analyzer");
+const { crossPlatformMatrix, priceComparisonBrief } = require("./lib/sku-matcher");
+const { competitiveStrategyAnalysis, anomalyInterpretation, dailyExecutiveSummary, isConfigured: isQwenConfigured } = require("./lib/qwen-analyzer");
 const { sanitize } = require("./lib/utils");
 const { usageTracker, getTodayUsage, getMonthlyUsage, getAllTenantsUsage, getTodaySearchCount, flush } = require("./lib/usage-tracker");
 const { getPlan, getPlanLimits } = require("./lib/plans");
@@ -77,7 +79,7 @@ app.get("/api/v1/health", async (req, res) => {
   }
   const smtpStatus = await mailer.verifyConnection();
   const schStatus = scheduler.getStatus();
-  res.json({ code: 0, message: "ok", uptime: process.uptime(), tenants: statuses, smtp: smtpStatus, scheduler: schStatus });
+  res.json({ code: 0, message: "ok", uptime: process.uptime(), tenants: statuses, smtp: smtpStatus, scheduler: schStatus, qwenConfigured: isQwenConfigured() });
 });
 
 // ── Auth + Usage tracking ──────────────────────────────────────
@@ -407,6 +409,27 @@ app.get("/api/v1/admin/overview", adminAuth, (req, res) => {
 // ── GET /api/v1/scheduler/status ──────────────────────────────
 app.get("/api/v1/scheduler/status", (req, res) => {
   res.json({ code: 0, data: scheduler.getStatus() });
+});
+
+// ── GET /dashboard — 专业仪表盘 ──────────────────────────────
+app.get("/dashboard", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "dashboard.html"));
+});
+
+// ── POST /api/v1/admin/collect-all — 手动触发全量采集 ────────
+app.post("/api/v1/admin/collect-all", adminAuth, async (req, res) => {
+  if (scheduler.getStatus().running) {
+    return res.json({ code: 409, message: "采集任务正在进行中" });
+  }
+  res.json({ code: 0, message: "全量采集已启动，请稍后查看状态" });
+  try {
+    const result = await scheduler.runNow(async (tenantId, brandName) => {
+      await runCollection(tenantId, brandName);
+    });
+    console.log(`[admin] 全量采集完成: ${JSON.stringify(result)}`);
+  } catch (e) {
+    console.error(`[admin] 全量采集异常: ${e.message}`);
+  }
 });
 
 // ── GET /api/v1/export — CSV 导出产品数据 ──────────────────────
@@ -891,6 +914,38 @@ async function runCollection(tenantId, brand) {
     const brief = generateDailyBrief(brand, todayStr, combinedComparison, trends, suggestions);
     brief.healthScore = healthScore;
     brief.instantAnalysis = instantResult;
+
+    // ── Cross-platform SKU matching ──
+    const snapshots = { tmall: tmSnapshot, jd: jdSnapshot, pdd: pddSnapshot, douyin: dySnapshot, suning: snSnapshot, dangdang: ddSnapshot };
+    const skuMatrix = crossPlatformMatrix(snapshots);
+    if (skuMatrix.matches?.length > 0) {
+      const pcBrief = priceComparisonBrief(skuMatrix);
+      brief.skuMatrix = { totalMatches: skuMatrix.totalMatches, multiPlatformMatches: skuMatrix.multiPlatformMatches, topDeals: skuMatrix.topDeals };
+      if (pcBrief.sections.length > 0) {
+        brief.sections = [...(brief.sections || []), { emoji: "🔗", title: "跨平台比价", body: pcBrief.sections.map(s => s.title + "\n" + s.body).join("\n\n") }];
+      }
+    }
+
+    // ── Qwen AI analysis (async, non-blocking) ──
+    if (isQwenConfigured()) {
+      const qwenResults = await Promise.allSettled([
+        anomalyInterpretation(brand, allSignals),
+        competitiveStrategyAnalysis(brand, snapshots, instantResult, skuMatrix),
+        dailyExecutiveSummary(brand, brief, allSignals, trends),
+      ]);
+      const [anomalyResult, strategyResult, summaryResult] = qwenResults;
+      if (summaryResult.status === "fulfilled" && summaryResult.value) {
+        brief.aiSummary = summaryResult.value;
+      }
+      if (anomalyResult.status === "fulfilled" && anomalyResult.value?.interpretation) {
+        brief.aiAnomaly = anomalyResult.value.interpretation;
+      }
+      if (strategyResult.status === "fulfilled" && strategyResult.value?.analysis) {
+        brief.aiStrategy = strategyResult.value.analysis;
+        brief.sections = [...(brief.sections || []), { emoji: "🤖", title: "AI 策略建议", body: strategyResult.value.analysis }];
+      }
+    }
+
     // For first collection, replace "明日起..." with instant analysis sections
     if (instantResult && instantResult.sections.length > 0) {
       brief.headline = `${brand} 竞品监测已启动。基于首日采集数据的即时竞争分析已完成。`;

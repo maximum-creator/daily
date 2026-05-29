@@ -11,6 +11,12 @@ const { normalizeName, localISO, today, sanitize, parsePrice, parseSales, classi
 async function searchPddProducts(page, brandName, maxPages = 1) {
   const allProducts = [];
 
+  // Switch to mobile viewport for PDD (critical — desktop UA triggers stricter anti-bot)
+  const origViewport = page.viewportSize();
+  try {
+    await page.setViewportSize({ width: 414, height: 896 });
+  } catch (e) { /* may fail if context already has viewport set */ }
+
   // Intercept API responses for product data
   const apiProducts = [];
   const onResponse = (response) => {
@@ -27,18 +33,26 @@ async function searchPddProducts(page, brandName, maxPages = 1) {
   for (let pg = 1; pg <= maxPages; pg++) {
     const searchUrl = `https://mobile.yangkeduo.com/search_result.html?search_key=${encodeURIComponent(brandName)}&page=${pg}`;
 
-    try {
-      if (pg === 1) {
-        await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-      } else {
-        await page.goto(searchUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
+    let navSuccess = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await page.goto(searchUrl, {
+          waitUntil: pg === 1 ? "networkidle" : "domcontentloaded",
+          timeout: pg === 1 ? 35000 : 25000,
+        });
+        navSuccess = true;
+        break;
+      } catch (e) {
+        console.log(`[pdd] pg${pg} 导航重试 ${attempt + 1}/3: ${e.message}`);
+        await page.waitForTimeout(2000);
       }
-    } catch (e) {
-      console.log(`[pdd] pg${pg} 导航失败: ${e.message}`);
+    }
+    if (!navSuccess) {
+      console.log(`[pdd] pg${pg} 导航全部失败`);
       break;
     }
 
-    await page.waitForTimeout(3000 + Math.random() * 2000);
+    await page.waitForTimeout(2000 + Math.random() * 2000);
 
     const currentUrl = page.url();
     const pageTitle = await page.title().catch(() => "");
@@ -66,22 +80,27 @@ async function searchPddProducts(page, brandName, maxPages = 1) {
       try {
         const rawData = window.rawData;
         if (!rawData) return [];
-        // PDD nests product data in various paths
+        // PDD nests product data in various paths — try all known patterns
         const items = rawData?.serverRenderedData?.searchResult?.resultList
           || rawData?.searchResult?.resultList
+          || rawData?.store?.storeData?.items
+          || rawData?.store?.initDataObj?.items
           || rawData?.items
           || rawData?.goodsList
+          || rawData?.data?.items
+          || rawData?.resultList
+          || rawData?.data?.result?.items
           || [];
         if (!Array.isArray(items) || items.length === 0) return [];
         return items.map(item => ({
-          name: (item.goodsName || item.goods_name || item.name || "").trim(),
-          price: String(item.minGroupPrice || item.groupPrice || item.price || item.min_price || "")
+          name: (item.goodsName || item.goods_name || item.name || item.productName || "").trim(),
+          price: String(item.minGroupPrice || item.groupPrice || item.price || item.min_price || item.minPrice || "")
             .replace(/^(\d+)$/, "$1"),
-          sales: String(item.salesTip || item.sales || item.soldQuantity || ""),
-          shop: (item.mallName || item.shopName || item.mall_name || "").trim(),
-          goodsId: String(item.goodsId || item.goods_id || item.goodsID || ""),
-          imgSrc: (item.goodsImage || item.thumbUrl || item.image || ""),
-          linkUrl: item.linkUrl || "",
+          sales: String(item.salesTip || item.sales || item.soldQuantity || item.sold || ""),
+          shop: (item.mallName || item.shopName || item.mall_name || item.shop_name || "").trim(),
+          goodsId: String(item.goodsId || item.goods_id || item.goodsID || item.id || ""),
+          imgSrc: (item.goodsImage || item.thumbUrl || item.image || item.goods_image || ""),
+          linkUrl: item.linkUrl || item.link_url || "",
         }));
       } catch (e) { return []; }
     });
@@ -159,6 +178,13 @@ async function searchPddProducts(page, brandName, maxPages = 1) {
   }
 
   page.off("response", onResponse);
+
+  // Restore original viewport
+  if (origViewport) {
+    try {
+      await page.setViewportSize(origViewport);
+    } catch (e) { /* ignore */ }
+  }
 
   // Merge API products
   if (apiProducts.length > allProducts.length) {

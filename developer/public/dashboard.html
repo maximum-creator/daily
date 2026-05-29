@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>竞品情报 · 仪表盘</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"Microsoft YaHei","PingFang SC",sans-serif;background:#0f172a;color:#e2e8f0;line-height:1.6}
+.dashboard{max-width:1400px;margin:0 auto;padding:20px}
+.header{display:flex;justify-content:space-between;align-items:center;padding:16px 0;border-bottom:1px solid #1e293b;margin-bottom:24px}
+.header h1{font-size:24px;background:linear-gradient(135deg,#38bdf8,#a78bfa);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.header .meta{font-size:12px;color:#64748b}
+.grid{display:grid;gap:20px}
+.grid-2{grid-template-columns:repeat(2,1fr)}
+.grid-3{grid-template-columns:repeat(3,1fr)}
+.grid-4{grid-template-columns:repeat(4,1fr)}
+.card{background:#1e293b;border-radius:12px;padding:20px;border:1px solid #334155}
+.card h3{font-size:15px;color:#94a3b8;margin-bottom:12px;font-weight:500;display:flex;align-items:center;gap:8px}
+.card h3 .dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.dot-green{background:#22c55e}
+.dot-yellow{background:#eab308}
+.dot-red{background:#ef4444}
+.dot-blue{background:#3b82f6}
+.stat-value{font-size:32px;font-weight:700;color:#f1f5f9}
+.stat-label{font-size:12px;color:#64748b;margin-top:4px}
+.stat-change{font-size:12px;margin-left:8px}
+.stat-up{color:#22c55e}
+.stat-down{color:#ef4444}
+.platform-row{display:flex;gap:6px;flex-wrap:wrap}
+.platform-tag{padding:3px 10px;border-radius:12px;font-size:11px;font-weight:600}
+.tag-tmall{background:#ffebee;color:#c62828}
+.tag-jd{background:#e3f2fd;color:#1565c0}
+.tag-pdd{background:#fce4ec;color:#c62828}
+.tag-douyin{background:#f3e5f5;color:#7b1fa2}
+.tag-suning{background:#fff8e1;color:#f57f17}
+.tag-dangdang{background:#e8f5e9;color:#2e7d32}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;padding:8px 12px;color:#94a3b8;font-weight:500;border-bottom:1px solid #334155}
+td{padding:8px 12px;border-bottom:1px solid #1e293b}
+tr:hover{background:#1a2538}
+.health-bar{height:6px;border-radius:3px;background:#334155;overflow:hidden}
+.health-bar-inner{height:100%;border-radius:3px;transition:width .5s}
+.signal-item{padding:8px 12px;border-radius:8px;margin:4px 0;border-left:3px solid}
+.signal-high{border-color:#ef4444;background:#2d1f1f}
+.signal-medium{border-color:#eab308;background:#2d2a1f}
+.signal-low{border-color:#3b82f6}
+.signal-title{font-size:13px;font-weight:600}
+.signal-detail{font-size:11px;color:#94a3b8;margin-top:2px}
+.match-card{padding:8px 12px;border-radius:8px;background:#1a2538;margin:4px 0}
+.match-name{font-size:13px;font-weight:500;margin-bottom:4px}
+.match-prices{display:flex;gap:12px;flex-wrap:wrap}
+.match-price{padding:3px 8px;border-radius:4px;font-size:12px;background:#0f172a}
+.best-deal{background:#1a3a1a!important;color:#22c55e}
+.fetching{text-align:center;padding:40px;color:#64748b}
+.chart-wrap{position:relative;height:220px}
+.chart-wrap canvas{width:100%!important}
+</style>
+</head>
+<body>
+<div class="dashboard">
+
+<div class="header">
+  <div>
+    <h1>📊 竞品情报 · 仪表盘</h1>
+    <div class="meta">实时竞品监测 · 跨平台比价 · AI分析</div>
+  </div>
+  <div style="text-align:right">
+    <div class="stat-value" id="clock" style="font-size:18px">--</div>
+    <div class="stat-label" id="updateTime">等待数据加载...</div>
+  </div>
+</div>
+
+<!-- Stats row -->
+<div class="grid grid-4" id="statsRow" style="margin-bottom:20px">
+  <div class="card"><h3>监测品牌</h3><div class="stat-value" id="statBrands">-</div><div class="stat-label">已监测品牌数</div></div>
+  <div class="card"><h3>数据平台</h3><div class="stat-value" id="statPlatforms">6</div><div class="stat-label">天猫+京东+拼多多+抖音+苏宁+当当</div></div>
+  <div class="card"><h3>高优信号</h3><div class="stat-value" id="statHighSignals">-</div><div class="stat-label">需要立即关注的变动</div></div>
+  <div class="card"><h3>AI 分析</h3><div class="stat-value" id="statAI">-</div><div class="stat-label">Qwen 策略分析就绪</div></div>
+</div>
+
+<!-- Main content -->
+<div class="grid grid-2" style="margin-bottom:20px">
+  <!-- Brand Health Leaderboard -->
+  <div class="card">
+    <h3><span class="dot dot-green"></span>品牌健康度排行</h3>
+    <table><thead><tr><th>品牌</th><th>健康度</th><th>商品数</th><th>信号</th><th>高优</th><th>平台</th></tr></thead>
+    <tbody id="healthTable"><tr><td colspan="6" class="fetching">加载中…</td></tr></tbody></table>
+  </div>
+
+  <!-- Price Range Comparison Chart -->
+  <div class="card">
+    <h3><span class="dot dot-blue"></span>各平台价格区间</h3>
+    <div class="chart-wrap"><canvas id="priceChart"></canvas></div>
+  </div>
+</div>
+
+<!-- Cross-platform SKU matches -->
+<div class="card" style="margin-bottom:20px">
+  <h3><span class="dot dot-blue"></span>跨平台商品匹配 & 比价</h3>
+  <div id="skuMatches"><div class="fetching">需要先采集品牌数据</div></div>
+</div>
+
+<!-- Signals + AI Analysis -->
+<div class="grid grid-2" style="margin-bottom:20px">
+  <div class="card">
+    <h3><span class="dot dot-yellow"></span>最近信号</h3>
+    <div id="recentSignals"><div class="fetching">暂无信号</div></div>
+  </div>
+  <div class="card">
+    <h3><span class="dot dot-blue"></span>AI 策略建议</h3>
+    <div id="aiAnalysis"><div class="fetching">需要配置 Qwen API (config/qwen.json)</div></div>
+  </div>
+</div>
+
+<!-- Trend Charts -->
+<div class="grid grid-2" style="margin-bottom:20px">
+  <div class="card">
+    <h3>商品数量趋势（7天）</h3>
+    <div class="chart-wrap"><canvas id="productTrendChart"></canvas></div>
+  </div>
+  <div class="card">
+    <h3>均价趋势（7天）</h3>
+    <div class="chart-wrap"><canvas id="priceTrendChart"></canvas></div>
+  </div>
+</div>
+
+</div>
+
+<script>
+const API = "/api/v1";
+const API_KEY = "dev_sk_demo_001";
+
+async function api(method, path, body) {
+  const opts = {
+    method,
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${API_KEY}` },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(API + path, opts);
+  return res.json();
+}
+
+function updateClock() {
+  const now = new Date();
+  document.getElementById("clock").textContent = now.toLocaleTimeString("zh-CN", { hour12: false });
+  document.getElementById("updateTime").textContent = `最后更新: ${now.toLocaleString("zh-CN")}`;
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// ── Load Data ──────────────────────────────────────────────────
+
+(async function init() {
+  // Health check
+  let health, brands;
+  try {
+    health = await api("GET", "/health");
+    document.getElementById("statAI").textContent = health.qwenConfigured ? "已配置" : "未配置";
+  } catch(e) {
+    document.getElementById("statAI").textContent = "离线";
+  }
+
+  // Load brands
+  try {
+    const res = await api("GET", "/brands");
+    brands = res.data || [];
+    document.getElementById("statBrands").textContent = brands.length;
+  } catch(e) {}
+
+  // Load latest report for first brand
+  if (brands && brands.length > 0) {
+    await loadBrandData(brands[0].name);
+  }
+
+  // Load brand list for health table
+  await loadHealthTable(brands || []);
+})();
+
+async function loadBrandData(brand) {
+  try {
+    const res = await api("GET", `/report?brand=${encodeURIComponent(brand)}`);
+    if (res.code !== 0) return;
+
+    const brief = res.data;
+    document.getElementById("statHighSignals").textContent = brief.highCount || 0;
+    renderSignals(brief);
+    renderAIAnalysis(brief);
+    renderPriceChart(brief);
+    renderTrendCharts(brief);
+    renderSKUMatches(brief);
+  } catch(e) {
+    console.error("加载品牌数据失败:", e);
+  }
+}
+
+async function loadHealthTable(brands) {
+  const tbody = document.getElementById("healthTable");
+  if (brands.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" class="fetching">暂无监测品牌，在<a href="/" style="color:#38bdf8">主页</a>添加品牌开始</td></tr>`;
+    return;
+  }
+
+  const rows = [];
+  for (const b of brands.slice(0, 10)) {
+    try {
+      const res = await api("GET", `/report?brand=${encodeURIComponent(b.name)}`);
+      const score = res.code === 0 ? (res.data.healthScore || 0) : 0;
+      const color = score >= 70 ? "#22c55e" : score >= 40 ? "#eab308" : "#ef4444";
+      const sources = res.code === 0 ? (res.data.sources || []) : [];
+      rows.push({
+        name: b.name,
+        score,
+        color,
+        productCount: res.code === 0 ? (res.data.raw?.totalProducts || "-") : "-",
+        signalCount: b.lastSignalCount || 0,
+        highCount: b.lastHighCount || 0,
+        sources,
+      });
+    } catch(e) {
+      rows.push({ name: b.name, score: 0, color: "#64748b", productCount: "-", signalCount: 0, highCount: 0, sources: [] });
+    }
+  }
+
+  rows.sort((a, b) => b.score - a.score);
+
+  const tags = { tmall: "tag-tmall", jd: "tag-jd", pdd: "tag-pdd", douyin: "tag-douyin", suning: "tag-suning", dangdang: "tag-dangdang" };
+  const labels = { tmall: "猫", jd: "京", pdd: "多", douyin: "抖", suning: "苏", dangdang: "当" };
+
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td><strong>${escHtml(r.name)}</strong></td>
+      <td>
+        <span style="color:${r.color};font-weight:600">${r.score}</span>
+        <div class="health-bar"><div class="health-bar-inner" style="width:${r.score}%;background:${r.color}"></div></div>
+      </td>
+      <td>${r.productCount}</td>
+      <td>${r.signalCount}</td>
+      <td><span style="color:${r.highCount > 0 ? '#ef4444' : '#94a3b8'}">${r.highCount}</span></td>
+      <td>${r.sources.map(s => `<span class="platform-tag ${tags[s]||''}">${labels[s]||s}</span>`).join(" ")}</td>
+    </tr>
+  `).join("");
+}
+
+// ── Signals ────────────────────────────────────────────────────
+
+function renderSignals(brief) {
+  const el = document.getElementById("recentSignals");
+  const signals = brief.signals || [];
+  const allSignals = [...(brief.instantAnalysis?.risk?.issues || []).map(i => ({ title: i, severity: "high" })), ...signals];
+
+  if (allSignals.length === 0) {
+    el.innerHTML = '<div class="fetching">暂无变动信号 — 品牌数据稳定</div>';
+    return;
+  }
+
+  el.innerHTML = allSignals.slice(0, 10).map(s => `
+    <div class="signal-item signal-${s.severity || 'low'}">
+      <div class="signal-title">${escHtml(s.title || s)}</div>
+      ${s.detail ? `<div class="signal-detail">${escHtml(s.detail)}</div>` : ""}
+    </div>
+  `).join("");
+}
+
+// ── AI Analysis ────────────────────────────────────────────────
+
+function renderAIAnalysis(brief) {
+  const el = document.getElementById("aiAnalysis");
+  const parts = [];
+  if (brief.aiSummary) parts.push(`<div style="margin-bottom:12px;color:#e2e8f0;font-size:13px;line-height:1.7">${escHtml(brief.aiSummary)}</div>`);
+  if (brief.aiStrategy) parts.push(`<div style="color:#94a3b8;font-size:12px;white-space:pre-wrap;line-height:1.7">${escHtml(brief.aiStrategy)}</div>`);
+  if (brief.aiAnomaly) parts.push(`<div style="margin-top:8px;padding:8px;background:#2d1f1f;border-radius:6px;font-size:12px;white-space:pre-wrap">${escHtml(brief.aiAnomaly)}</div>`);
+
+  if (parts.length > 0) {
+    el.innerHTML = parts.join("");
+  } else {
+    el.innerHTML = '<div class="fetching">AI分析未启用 — 配置 Qwen API Key (config/qwen.json) 后自动生成</div>';
+  }
+}
+
+// ── SKU Matches ────────────────────────────────────────────────
+
+function renderSKUMatches(brief) {
+  const el = document.getElementById("skuMatches");
+  const m = brief.skuMatrix;
+  if (!m || !m.totalMatches) {
+    el.innerHTML = '<div class="fetching">未发现跨平台匹配商品 — 采集更多品牌后自动识别</div>';
+    return;
+  }
+
+  let html = `<div style="font-size:13px;margin-bottom:12px">发现 <strong>${m.totalMatches}</strong> 组跨平台匹配，其中 <strong>${m.multiPlatformMatches}</strong> 组在3+平台出现</div>`;
+
+  if (m.topDeals && m.topDeals.length > 0) {
+    html += m.topDeals.slice(0, 8).map(d => `
+      <div class="match-card">
+        <div class="match-name">${escHtml(d.name || "未知商品")}</div>
+        <div class="match-prices">
+          ${(d.platforms || []).map(p => `<span class="match-price ${d.bestDeal?.platform === p ? 'best-deal' : ''}">${p}</span>`).join(" ")}
+          <span style="font-size:11px;color:#94a3b8">价差: ${d.spread || "N/A"}</span>
+        </div>
+      </div>
+    `).join("");
+  }
+  el.innerHTML = html;
+}
+
+// ── Charts ─────────────────────────────────────────────────────
+
+function renderPriceChart(brief) {
+  const ctx = document.getElementById("priceChart")?.getContext("2d");
+  if (!ctx) return;
+  const tiers = brief.instantAnalysis?.priceTiers || {};
+  const labels = [];
+  const mins = [], maxs = [], meds = [];
+  const colors = { tm: "#c62828", pdd: "#e91e63", dy: "#7b1fa2", sn: "#f57f17", dd: "#2e7d32" };
+  const names = { tm: "天猫", pdd: "拼多多", dy: "抖音", sn: "苏宁", dd: "当当" };
+
+  for (const [k, t] of Object.entries(tiers)) {
+    if (!t || !t.min) continue;
+    labels.push(names[k] || k);
+    mins.push(t.min);
+    maxs.push(t.max);
+    meds.push(t.median || 0);
+  }
+
+  if (labels.length === 0) {
+    ctx.canvas.parentElement.innerHTML = '<div class="fetching">需要先采集数据</div>';
+    return;
+  }
+
+  if (window._priceChart) window._priceChart.destroy();
+  window._priceChart = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        { label: "最低价", data: mins, backgroundColor: "#334155", borderRadius: 4 },
+        { label: "中位价", data: meds, backgroundColor: "#3b82f6", borderRadius: 4 },
+        { label: "最高价", data: maxs.map((v, i) => v - mins[i] - (meds[i] - mins[i])),
+          backgroundColor: "#ef4444", borderRadius: 4, borderSkipped: false },
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { labels: { color: "#94a3b8", font: { size: 11 } } } },
+      scales: {
+        x: { stacked: true, ticks: { color: "#94a3b8" }, grid: { display: false } },
+        y: { ticks: { color: "#94a3b8", callback: v => "¥" + v }, grid: { color: "#1e293b" } },
+      },
+    },
+  });
+}
+
+function renderTrendCharts(brief) {
+  const brand = brief.brand || "";
+  if (!brand) return;
+
+  // Product count trend
+  const pCtx = document.getElementById("productTrendChart")?.getContext("2d");
+  const rCtx = document.getElementById("priceTrendChart")?.getContext("2d");
+
+  if (pCtx && window._productTrend) window._productTrend.destroy();
+  if (rCtx && window._priceTrend) window._priceTrend.destroy();
+
+  const trends = brief.raw?.trends || {};
+  const prodData = trends.productCount?.values || [];
+  const priceData = trends.avgPrice?.values || [];
+
+  if (pCtx) {
+    window._productTrend = new Chart(pCtx, {
+      type: "line",
+      data: {
+        labels: prodData.map((_, i) => `D${i + 1}`),
+        datasets: [{ label: "商品数", data: prodData, borderColor: "#38bdf8", backgroundColor: "rgba(56,189,248,0.1)", fill: true, tension: 0.3 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: "#94a3b8" } } },
+        scales: { x: { ticks: { color: "#94a3b8" } }, y: { ticks: { color: "#94a3b8" }, grid: { color: "#1e293b" } } },
+      },
+    });
+  }
+
+  if (rCtx) {
+    window._priceTrend = new Chart(rCtx, {
+      type: "line",
+      data: {
+        labels: priceData.map((_, i) => `D${i + 1}`),
+        datasets: [{ label: "均价(¥)", data: priceData, borderColor: "#a78bfa", backgroundColor: "rgba(167,139,250,0.1)", fill: true, tension: 0.3 }],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { labels: { color: "#94a3b8" } } },
+        scales: { x: { ticks: { color: "#94a3b8" } }, y: { ticks: { color: "#94a3b8", callback: v => "¥" + v }, grid: { color: "#1e293b" } } },
+      },
+    });
+  }
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+</script>
+</body>
+</html>

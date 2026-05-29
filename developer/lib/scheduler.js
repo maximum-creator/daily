@@ -13,6 +13,8 @@ let config = {
 let activeTimers = [];
 let dataDir = null;
 let collectionCallback = null;
+let running = false;
+let lastRunResult = null;
 
 // ── Persisted run tracker ──────────────────────────────────────
 
@@ -82,37 +84,86 @@ function getStatus() {
     config: { ...config },
     todayRuns,
     active: activeTimers.length > 0,
+    running,
+    lastRunResult,
   };
+}
+
+// ── Run now (manual trigger) ──────────────────────────────────
+
+async function runNow(callback) {
+  if (running) return { error: "采集任务正在进行中" };
+  running = true;
+  const cb = callback || collectionCallback;
+  const tasks = discoverTasks();
+  if (tasks.length === 0) {
+    running = false;
+    return { total: 0, success: 0, failed: 0 };
+  }
+
+  let success = 0, failed = 0;
+  const errors = [];
+  for (const task of tasks) {
+    try {
+      console.log(`[scheduler] 手动采集: ${task.tenantId}/${task.brandName}`);
+      await cb(task.tenantId, task.brandName);
+      markRun(task.tenantId, task.brandName);
+      success++;
+    } catch (e) {
+      failed++;
+      errors.push({ tenant: task.tenantId, brand: task.brandName, error: e.message });
+    }
+    await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000));
+  }
+
+  lastRunResult = { time: new Date().toISOString(), total: tasks.length, success, failed, errors };
+  running = false;
+  return lastRunResult;
 }
 
 // ── Internal ────────────────────────────────────────────────────
 
 async function tick() {
   if (!shouldRunNow()) return;
+  if (running) { console.log("[scheduler] 上一轮采集仍在进行中，跳过"); return; }
   if (!collectionCallback) return;
 
+  running = true;
   console.log(`[scheduler] 触发每日采集 — ${new Date().toLocaleString("zh-CN")}`);
 
   const tasks = discoverTasks();
   if (tasks.length === 0) {
     console.log("[scheduler] 无待采集品牌");
+    running = false;
     return;
   }
 
-  console.log(`[scheduler] 待采集: ${tasks.length} 个品牌`);
-  for (const task of tasks) {
-    if (hasRunToday(task.tenantId, task.brandName)) continue;
+  const skipped = tasks.filter(t => hasRunToday(t.tenantId, t.brandName));
+  const pending = tasks.filter(t => !hasRunToday(t.tenantId, t.brandName));
+
+  console.log(`[scheduler] 待采集: ${pending.length} 个品牌 (跳过${skipped.length}个今日已完成)`);
+
+  let success = 0, failed = 0;
+  const errors = [];
+
+  for (const task of pending) {
     try {
       console.log(`[scheduler] 采集中: ${task.tenantId}/${task.brandName}`);
       await collectionCallback(task.tenantId, task.brandName);
       markRun(task.tenantId, task.brandName);
+      success++;
+      console.log(`[scheduler] ✓ ${task.brandName} 完成 (${success}/${pending.length})`);
     } catch (e) {
-      console.error(`[scheduler] 采集失败: ${task.tenantId}/${task.brandName} — ${e.message}`);
+      failed++;
+      errors.push({ tenant: task.tenantId, brand: task.brandName, error: e.message });
+      console.error(`[scheduler] ✗ ${task.brandName} 失败: ${e.message}`);
     }
-    // Delay between brands to avoid rate limiting
-    await new Promise(r => setTimeout(r, 5000 + Math.random() * 5000));
+    await new Promise(r => setTimeout(r, 8000 + Math.random() * 7000));
   }
-  console.log("[scheduler] 本轮采集完成");
+
+  lastRunResult = { time: new Date().toISOString(), total: pending.length, success, failed, errors };
+  console.log(`[scheduler] 本轮完成: ${success}成功 ${failed}失败`);
+  running = false;
 }
 
 function discoverTasks() {
@@ -142,4 +193,4 @@ function dateKey() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-module.exports = { start, stop, shouldRunNow, markRun, hasRunToday, getStatus };
+module.exports = { start, stop, shouldRunNow, markRun, hasRunToday, getStatus, runNow };
